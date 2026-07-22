@@ -33,7 +33,7 @@ The intended public MCP boundary is:
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
 | Production lifecycle verification | Pending authorization | Must create and destroy disposable production drafts |
 | Canonical repository integration | In progress | Local evidence recorded; remote and clean pinned SHA still require independent confirmation |
-| Unified landing workflow | In progress | Typed `manage_landing` contract and state model implemented; runtime orchestration pending |
+| Unified landing workflow | In progress | `manage_landing` now provides deterministic initial discovery and persisted legacy-draft status; repository-backed mutation remains pending |
 | Repository-backed previews | Planned | Current drafts still accept complete HTML |
 | Structured editing | Planned | Internal operations not implemented |
 | Publish approval and adapter | Planned | No production publishing capability exists |
@@ -76,7 +76,7 @@ service configuration yet.
 
 ## Milestone 2: Define the unified workflow contract
 
-**Status: Contract complete; orchestration pending**
+**Status: Contract complete; initial runtime orchestration implemented**
 
 Define `manage_landing` around workflow state rather than exposing many editing
 tools. A provisional request shape is:
@@ -107,9 +107,11 @@ the next user action.
 
 The typed wire contract, intent values, workflow states, and guarded state
 transitions live in `src/domain/landing-workflow.ts`. Intent classification is
-implemented independently of internal editing primitives. Registering the MCP
-tool and persisting workflow state belong to the repository-backed workspace
-slice.
+implemented independently of internal editing primitives. The MCP tool now
+resolves initial update requests without allocating a Sandbox and maps persisted
+legacy draft reads into the unified result shape. Create, edit, and publish
+requests fail closed with no side effects until repository-backed workflow state
+can be persisted safely.
 
 Acceptance criteria:
 
@@ -120,7 +122,7 @@ Acceptance criteria:
 
 ## Milestone 3: Resolve intent and page identity
 
-**Status: Resolver complete; repository integration pending**
+**Status: Resolver complete and MCP-integrated; repository integration pending**
 
 Classify requests as:
 
@@ -145,7 +147,9 @@ Deterministic discovery derives page identities from repository source paths
 and exact registered hostnames. The locally observed candidate snapshot is
 explicitly non-authoritative and cannot be used for checkout. Update requests
 can now resolve, summarize, detect actionable changes, and produce one
-consolidated question without allocating a Sandbox.
+consolidated question without allocating a Sandbox. `manage_landing` exposes
+that safe discovery path and refuses actionable repository work while the
+repository boundary remains unconfigured.
 
 Acceptance criteria:
 
@@ -375,8 +379,9 @@ Acceptance criteria:
 ## Immediate next actions
 
 1. Confirm the canonical remote and clean base SHA.
-2. Write the typed `manage_landing` request, result, and workflow-state contract.
-3. Implement deterministic repository page discovery and TacoGraph resolution.
-4. Add tests for new/update/status/publish intent classification.
-5. Begin the repository-backed workspace slice only after the boundary inputs are
-   confirmed.
+2. Choose read-only checkout and narrowly scoped publishing credentials.
+3. Decide whether publishing creates pull requests or controlled direct commits.
+4. Begin exact-SHA repository workspace persistence only after those boundary
+   inputs are confirmed.
+5. Keep `manage_landing` create, edit, and publish-request branches fail closed
+   until the corresponding durable workflow operations exist.

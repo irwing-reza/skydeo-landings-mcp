@@ -3,8 +3,16 @@ import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 
 import type { DraftRecord } from "../domain/draft";
+import {
+  inspectLandingDraft,
+  planInitialLandingRequest,
+  unavailableDraftOperation,
+} from "../domain/manage-landing";
+import { classifyLandingIntent } from "../domain/landing-intent";
+import type { ManageLandingRequest, ManageLandingResult } from "../domain/landing-workflow";
 import { previewLifecycleState } from "../domain/preview-lifecycle";
 import { draftObjectName } from "../drafts/draft-object-name";
+import { LOCAL_CANDIDATE_LANDING_SNAPSHOT } from "../repository/page-catalog";
 
 export interface AuthContext extends Record<string, unknown> {
   claims: {
@@ -26,6 +34,61 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
 
   init(): Promise<void> {
     this.server.registerTool(
+      "manage_landing",
+      {
+        description:
+          "Resolve and inspect the unified Skydeo landing-page workflow. Initial discovery and status reads are available; repository-backed edits fail closed until the canonical repository boundary is configured. This tool never confirms or completes publishing.",
+        inputSchema: {
+          request: z.string().trim().min(1).max(10_000),
+          draft_id: z.uuid().optional(),
+          expected_revision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+        },
+      },
+      async (input) => {
+        const request: ManageLandingRequest = {
+          request: input.request,
+          ...(input.draft_id === undefined ? {} : { draft_id: input.draft_id }),
+          ...(input.expected_revision === undefined
+            ? {}
+            : { expected_revision: input.expected_revision }),
+        };
+        const intent = classifyLandingIntent(request);
+        const permission = intent === "inspect_status"
+          ? "landings:read"
+          : intent === "request_publish"
+            ? "landings:publish"
+            : "landings:write";
+        const auth = this.requirePermission(permission);
+
+        try {
+          if (input.draft_id === undefined) {
+            return workflowResult(
+              planInitialLandingRequest(request, LOCAL_CANDIDATE_LANDING_SNAPSHOT),
+            );
+          }
+
+          const draft = await this.env.DRAFTS.getByName(
+            draftObjectName(auth.organizationId, input.draft_id),
+          ).get(auth.organizationId);
+          if (intent === "inspect_status") {
+            return workflowResult(inspectLandingDraft(draft));
+          }
+          if (
+            input.expected_revision !== undefined &&
+            input.expected_revision !== draft.currentRevision
+          ) {
+            throw new Error(
+              `Draft revision conflict: expected ${input.expected_revision}, current ${draft.currentRevision}`,
+            );
+          }
+          return workflowResult(unavailableDraftOperation(request, draft));
+        } catch (error: unknown) {
+          return toolError(error);
+        }
+      },
+    );
+
+    this.server.registerTool(
       "get_service_status",
       {
         description:
@@ -42,6 +105,8 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                   phase: "draft-preview-loop",
                   capabilities: {
                     status: true,
+                    manageLanding: true,
+                    repositoryBackedEditing: false,
                     createDraft: true,
                     getDraft: true,
                     updateDraft: true,
@@ -159,13 +224,15 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
     return Promise.resolve();
   }
 
-  private requirePermission(permission: "landings:read" | "landings:write"): AuthContext {
+  private requirePermission(
+    permission: "landings:read" | "landings:write" | "landings:publish",
+  ): AuthContext {
     const authMode: string = this.env.MCP_AUTH_MODE;
     if (authMode === "local") {
       return {
         claims: { email: "local@skydeo.invalid", name: "Local developer", sub: "local-dev" },
         organizationId: this.env.ORGANIZATION_ID,
-        permissions: ["landings:read", "landings:write"],
+        permissions: ["landings:read", "landings:write", "landings:publish"],
       };
     }
 
@@ -175,6 +242,13 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
     }
     return auth;
   }
+}
+
+function workflowResult(result: ManageLandingResult) {
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+    structuredContent: { ...result },
+  };
 }
 
 function draftResult(draft: DraftRecord) {

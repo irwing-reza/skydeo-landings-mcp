@@ -19,6 +19,8 @@ This repository currently provides a production-authenticated draft and preview 
 
 - Streamable HTTP MCP transport through Cloudflare Agents SDK
 - a Cloudflare Access OAuth integration for Skydeo team identity
+- `manage_landing` for deterministic initial page discovery and persisted
+  legacy-draft status reads
 - `create_draft`, `get_draft`, `update_draft`, and `revoke_preview` MCP tools
 - a typed landing-draft state machine
 - one SQLite-backed Durable Object per draft
@@ -29,6 +31,13 @@ This repository currently provides a production-authenticated draft and preview 
 - a configurable preview TTL (24 hours by default), revocation, Durable Object
   alarms, and idempotent Sandbox cleanup
 - no production publishing capability or credentials
+
+`manage_landing` is the intended public workflow boundary. Its safe discovery
+and status paths are active now. Repository-backed create/edit requests and all
+publish requests fail closed without allocating a Sandbox or changing state
+until the canonical repository and credentials are configured. The direct-HTML
+draft tools remain available as legacy foundation capabilities during that
+migration.
 
 The deployed `/mcp` route uses Cloudflare Access-backed OAuth. `npm run dev`
 explicitly enables a local-only mode, while `npm run dev:access` exercises the

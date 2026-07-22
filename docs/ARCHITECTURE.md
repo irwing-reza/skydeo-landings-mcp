@@ -44,18 +44,19 @@ client to one hosted `/mcp` URL. The client is a user interface and protocol pee
 it is not trusted as a source of organization identity, permissions, draft state,
 or approval state.
 
-The intended tool sequence is:
+The intended public tool sequence is:
 
-1. `create_draft`
-2. `update_draft`
-3. `get_draft`
-4. repeat update and get calls
-5. `request_publish` (planned)
-6. `confirm_publish` (planned)
+1. `manage_landing`
+2. repeat `manage_landing` for revisions, status, and a publish request
+3. `confirm_publish` for one explicit immutable-revision confirmation (planned)
 
-The first three tools and `get_service_status` exist today. Inputs are validated
-with Zod, and every mutating tool derives the actor and organization from trusted
-server context rather than accepting them as client parameters.
+`manage_landing` currently supports deterministic initial discovery and status
+reads for persisted legacy drafts. It fails repository-backed create, edit, and
+publish operations closed until their durable implementations exist. The
+low-level direct-HTML draft tools and `get_service_status` remain available as
+foundation capabilities. Inputs are validated with Zod, and every mutating tool
+derives the actor and organization from trusted server context rather than
+accepting them as client parameters.
 
 ## Layer 2: Worker entrypoint and routing
 
@@ -145,11 +146,17 @@ The source integration uses `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`,
 
 ## Layer 4: MCP session agent
 
-**Status: Implemented for the draft/edit/preview loop.**
+**Status: Implemented for discovery and the legacy draft/edit/preview loop.**
 
 [`LandingMcp`](../src/mcp/landing-mcp.ts) extends Cloudflare's `McpAgent`. It owns
 the MCP server instance, registers tools, receives OAuth props in the future, and
 provides the Streamable HTTP session handled by `McpAgent.serve()`.
+
+The unified `manage_landing` entrypoint classifies intent before authorization,
+uses `landings:read` for status, `landings:write` for ordinary workflow requests,
+and `landings:publish` for publish requests. Discovery is side-effect free. Until
+the repository boundary is configured, actionable create/edit and publish
+requests return a failed workflow result without creating a draft or Sandbox.
 
 An MCP session Durable Object is useful for protocol/session concerns, but it is
 not the authoritative draft store. A user can reconnect, change MCP clients, or
