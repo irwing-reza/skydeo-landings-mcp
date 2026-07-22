@@ -48,12 +48,14 @@ The intended public tool sequence is:
 
 1. `manage_landing`
 2. repeat `manage_landing` for revisions, status, and a publish request
-3. `confirm_publish` for one explicit immutable-revision confirmation (planned)
+3. `confirm_publish` for one explicit immutable-revision confirmation
 
 `manage_landing` currently supports deterministic initial discovery and status
 reads for persisted legacy drafts. It fails repository-backed create, edit, and
 publish operations closed until their durable implementations exist. The
-low-level direct-HTML draft tools and `get_service_status` remain available as
+separate `confirm_publish` tool requires `landings:publish` and fails closed
+without reading draft state until durable one-time confirmation records exist.
+The low-level direct-HTML draft tools and `get_service_status` remain available as
 foundation capabilities. Inputs are validated with Zod, and every mutating tool
 derives the actor and organization from trusted server context rather than
 accepting them as client parameters.

@@ -4,6 +4,10 @@ import { z } from "zod";
 
 import type { DraftRecord } from "../domain/draft";
 import {
+  permissionForLandingIntent,
+  type LandingPermission,
+} from "../domain/landing-authorization";
+import {
   inspectLandingDraft,
   planInitialLandingRequest,
   unavailableDraftOperation,
@@ -53,12 +57,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
             : { expected_revision: input.expected_revision }),
         };
         const intent = classifyLandingIntent(request);
-        const permission = intent === "inspect_status"
-          ? "landings:read"
-          : intent === "request_publish"
-            ? "landings:publish"
-            : "landings:write";
-        const auth = this.requirePermission(permission);
+        const auth = this.requirePermission(permissionForLandingIntent(intent));
 
         try {
           if (input.draft_id === undefined) {
@@ -89,6 +88,29 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
     );
 
     this.server.registerTool(
+      "confirm_publish",
+      {
+        description:
+          "Confirm one previously requested, immutable landing revision for publishing. This is a separate landings:publish security boundary and currently fails closed because publish confirmation records and repository publishing are not configured.",
+        inputSchema: {
+          draft_id: z.uuid(),
+          expected_revision: z.string().regex(/^[a-f0-9]{64}$/),
+          confirmation_token: z.string().trim().min(32).max(4_096),
+        },
+      },
+      () => {
+        this.requirePermission("landings:publish");
+        return Promise.resolve(
+          toolError(
+            new Error(
+              "Publish confirmation is unavailable; no confirmation record was consumed and no repository or production action occurred",
+            ),
+          ),
+        );
+      },
+    );
+
+    this.server.registerTool(
       "get_service_status",
       {
         description:
@@ -107,6 +129,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                     status: true,
                     manageLanding: true,
                     repositoryBackedEditing: false,
+                    confirmPublish: false,
                     createDraft: true,
                     getDraft: true,
                     updateDraft: true,
@@ -224,9 +247,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
     return Promise.resolve();
   }
 
-  private requirePermission(
-    permission: "landings:read" | "landings:write" | "landings:publish",
-  ): AuthContext {
+  private requirePermission(permission: LandingPermission): AuthContext {
     const authMode: string = this.env.MCP_AUTH_MODE;
     if (authMode === "local") {
       return {

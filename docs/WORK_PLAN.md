@@ -36,7 +36,7 @@ The intended public MCP boundary is:
 | Unified landing workflow | In progress | `manage_landing` now provides deterministic initial discovery and persisted legacy-draft status; repository-backed mutation remains pending |
 | Repository-backed previews | Planned | Current drafts still accept complete HTML |
 | Structured editing | Planned | Internal operations not implemented |
-| Publish approval and adapter | Planned | No production publishing capability exists |
+| Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
 
 ## Known repository candidates
@@ -276,7 +276,13 @@ Acceptance criteria:
 
 ## Milestone 9: Add publish request and confirmation records
 
-**Status: Planned**
+**Status: Security boundary registered; durable records planned**
+
+`confirm_publish` is now a distinct MCP tool guarded by `landings:publish`.
+Until expiring one-time confirmation records and the repository adapter exist,
+it returns an explicit error without loading or mutating a draft, consuming a
+token, accessing a repository, or taking a production action. Intent-to-scope
+routing for `manage_landing` is centralized and verified independently.
 
 `manage_landing` may request publishing but must not complete it. A publish
 request should record and return:

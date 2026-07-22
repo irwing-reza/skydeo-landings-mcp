@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { permissionForLandingIntent } from "../src/domain/landing-authorization";
 import { classifyLandingIntent, hasActionablePageChange } from "../src/domain/landing-intent";
 import {
   inspectLandingDraft,
@@ -24,6 +25,16 @@ describe("manage_landing contract", () => {
     ["request_publish", { request: "Request publish", draft_id: "draft-1" }],
   ] as const)("classifies %s intent", (expected, request) => {
     expect(classifyLandingIntent(request)).toBe(expected);
+  });
+
+  it.each([
+    ["create_page", "landings:write"],
+    ["update_page", "landings:write"],
+    ["continue_draft", "landings:write"],
+    ["inspect_status", "landings:read"],
+    ["request_publish", "landings:publish"],
+  ] as const)("authorizes %s with %s", (intent, permission) => {
+    expect(permissionForLandingIntent(intent)).toBe(permission);
   });
 
   it("distinguishes a vague update from an actionable change", () => {

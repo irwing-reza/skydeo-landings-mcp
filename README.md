@@ -21,6 +21,8 @@ This repository currently provides a production-authenticated draft and preview 
 - a Cloudflare Access OAuth integration for Skydeo team identity
 - `manage_landing` for deterministic initial page discovery and persisted
   legacy-draft status reads
+- `confirm_publish` as a separate `landings:publish` boundary that currently
+  fails closed without reading draft state or taking repository action
 - `create_draft`, `get_draft`, `update_draft`, and `revoke_preview` MCP tools
 - a typed landing-draft state machine
 - one SQLite-backed Durable Object per draft
