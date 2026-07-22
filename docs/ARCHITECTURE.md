@@ -212,11 +212,14 @@ This layer is the coordination atom for one landing draft. It serializes lifecyc
 transitions, persists revision and URL metadata, and prevents two requests from
 independently publishing the same draft.
 
-The Durable Object supports creating, reading, and updating one draft. Create and
-update render an immutable SHA-256-addressed HTML revision in the draft's Sandbox,
-and reads and updates verify the authenticated organization against the stored
-`organizationId`. Updates also use an expected revision to reject lost updates.
-Approval records and idempotent publish results remain future work.
+The Durable Object supports creating, reading, updating, revoking, and cleaning up
+one draft preview. Create and update render an immutable SHA-256-addressed HTML
+revision in the draft's Sandbox, and reads and updates verify the authenticated
+organization against the stored `organizationId`. Updates also use an expected
+revision to reject lost updates. Preview lifecycle metadata is persisted as
+`preview_expires_at`, `preview_revoked_at`, `preview_cleanup_status`, and
+`preview_cleaned_at`. Approval records and idempotent publish results remain future
+work.
 
 The MCP layer should obtain a typed stub from the `DRAFTS` binding and call RPC
 methods; it should not expose the Durable Object directly over public HTTP.
@@ -268,11 +271,31 @@ The current preview layer:
 - bind the URL to one draft revision;
 - avoid leaking repository credentials or build logs;
 - use a stable URL while the corresponding revision remains active;
-- preserve older immutable revision URLs after a newer build succeeds.
-- require an authenticated Skydeo Access identity in production.
+- preserve older immutable revision URLs while the draft preview remains active;
+- require an authenticated Skydeo Access identity in production;
+- require an active lifecycle decision from the owning `DraftCoordinator` before
+  either local or production Sandbox proxying;
+- expire previews after `PREVIEW_TTL_SECONDS` (86,400 seconds by default);
+- revoke previews immediately through `revoke_preview`; and
+- destroy expired or revoked Sandbox containers through a Durable Object alarm.
 
-Expiration, revocation, and cleanup of abandoned preview processes remain required
-before this capability is considered fully production-safe.
+The lifecycle state is independent of the draft build status:
+
+```mermaid
+stateDiagram-v2
+    [*] --> active
+    active --> expired: TTL reached
+    active --> revoked: revoke_preview
+    expired --> cleaned_up: cleanup succeeds
+    revoked --> cleaned_up: cleanup succeeds
+    expired --> expired: cleanup retry
+    revoked --> revoked: cleanup retry
+```
+
+Cleanup is an idempotent per-draft job. The alarm and internal cleanup RPC derive the
+same stable Sandbox ID, skip an already completed cleanup, and reschedule failed
+container destruction after five minutes. Repeated cleanup calls therefore do not
+create duplicate work or recreate a cleaned container.
 
 The production wildcard route, DNS, TLS, and Access application have been verified
 with an authenticated Sandbox preview.
@@ -336,6 +359,9 @@ canonical repository pipeline already owns deployment.
 | `Sandbox` | Cloudflare Sandbox SDK | Isolated Git, build, and preview runtime |
 | `OAUTH_KV` | Workers OAuth Provider | OAuth clients, grants, tokens, and short-lived upstream state |
 | `PREVIEW_ACCESS_AUD` | Preview Access verifier | Binds preview assertions to the wildcard self-hosted Access application |
+| `PREVIEW_ACCESS_JWKS_URL` | Preview Access verifier | Account signing keys for preview assertions |
+| `ORGANIZATION_ID` | Auth and preview routing | Fixed trusted organization used for draft object names |
+| `PREVIEW_TTL_SECONDS` | `DraftCoordinator` | Preview lifetime; defaults to 86,400 seconds |
 | `MCP_AUTH_MODE` | Worker entrypoint | Temporary local-only gate; not real auth |
 | `observability` | Workers platform | Logs and traces for the control plane |
 
@@ -345,12 +371,12 @@ migration tags.
 
 ## Layer 12: Observability and audit trail
 
-**Status: Platform observability configured; application audit events planned.**
+**Status: Platform observability and initial lifecycle events implemented.**
 
 Workers logs and traces are enabled in [`wrangler.jsonc`](../wrangler.jsonc). The
-application still needs structured audit events for draft creation, build start
-and completion, preview access, approval issuance, approval consumption, publish
-attempts, and publish results.
+application emits structured events for draft creation and update, build start and
+outcome, preview opening, expiration, revocation, cleanup, and cleanup failure.
+Approval issuance and consumption plus publish attempts and results remain planned.
 
 Audit records should use opaque identifiers and must not include OAuth tokens,
 repository credentials, full environment dumps, or unredacted user prompts. A
@@ -364,14 +390,14 @@ sufficient for most investigations.
 | MCP transport | `McpAgent.serve()` wrapped by the OAuth provider in production | Maintain protocol compatibility |
 | Authentication | Access OAuth source and verification live in production | Maintain configuration and rotate secrets |
 | Authorization | Read/write scopes and authenticated production previews enforced | Add publish scope enforcement with approval |
-| MCP tools | Status plus create/get/update draft | Add structured repository edits |
+| MCP tools | Status plus create/get/update/revoke preview | Add structured repository edits |
 | Domain model | Draft state machine | Add revision and approval invariants |
-| Draft storage | SQLite Durable Object connected through typed RPC | Add approval records |
+| Draft storage | SQLite Durable Object with preview lifecycle and alarms | Add approval records |
 | Sandbox | Direct-HTML immutable previews | Clone, build, validate, and start Astro |
-| Preview | Revision-bound URL with fail-closed Access verification | Add expiration, revocation, and cleanup |
+| Preview | Access-protected, expiring, revocable, and durably cleaned up | Serve repository-backed Astro output |
 | Approval | Not implemented | Add expiring revision-bound approval records |
 | Publishing | Not implemented | Add async repository/pipeline adapter |
-| Observability | Workers logs/traces enabled | Add structured application audit events |
+| Observability | Logs/traces plus structured draft, build, and preview lifecycle events | Extend events through approval and publishing |
 
 ## Authoritative references
 

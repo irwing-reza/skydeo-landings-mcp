@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { previewSandboxId } from "../src/drafts/preview-sandbox-id";
+import {
+  draftIdFromPreviewSandboxId,
+  previewSandboxId,
+} from "../src/drafts/preview-sandbox-id";
 
 describe("preview sandbox IDs", () => {
   it("keeps the complete generated preview DNS label within 63 characters", () => {
@@ -13,5 +16,12 @@ describe("preview sandbox IDs", () => {
 
   it("normalizes organization characters for a DNS-safe label", () => {
     expect(previewSandboxId("Skydeo, Inc.", "ABC-123")).toBe("skydeoin-abc123");
+  });
+
+  it("recovers the draft UUID used to locate its coordinator", () => {
+    expect(
+      draftIdFromPreviewSandboxId("skydeo-14de4f8f27054cd5afb2deb9ded5057e"),
+    ).toBe("14de4f8f-2705-4cd5-afb2-deb9ded5057e");
+    expect(draftIdFromPreviewSandboxId("skydeo-not-a-uuid")).toBeNull();
   });
 });

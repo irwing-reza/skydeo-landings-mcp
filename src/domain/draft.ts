@@ -1,3 +1,5 @@
+import type { PreviewCleanupStatus } from "./preview-lifecycle";
+
 export const DRAFT_STATUSES = [
   "draft",
   "building",
@@ -21,6 +23,10 @@ export interface DraftRecord {
   previewUrl: string | null;
   productionUrl: string | null;
   html: string;
+  previewExpiresAt: number;
+  previewRevokedAt: number | null;
+  previewCleanupStatus: PreviewCleanupStatus;
+  previewCleanedAt: number | null;
   createdAt: number;
   updatedAt: number;
 }

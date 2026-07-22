@@ -3,6 +3,8 @@ import { McpAgent } from "agents/mcp";
 import { z } from "zod";
 
 import type { DraftRecord } from "../domain/draft";
+import { previewLifecycleState } from "../domain/preview-lifecycle";
+import { draftObjectName } from "../drafts/draft-object-name";
 
 export interface AuthContext extends Record<string, unknown> {
   claims: {
@@ -44,6 +46,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                     getDraft: true,
                     updateDraft: true,
                     preview: true,
+                    revokePreview: true,
                     publish: false,
                   },
                 },
@@ -134,6 +137,25 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
         }
       },
     );
+    this.server.registerTool(
+      "revoke_preview",
+      {
+        description:
+          "Revoke a draft preview immediately and schedule idempotent cleanup of its Sandbox container. This never publishes.",
+        inputSchema: { draft_id: z.uuid() },
+      },
+      async ({ draft_id: draftId }) => {
+        const auth = this.requirePermission("landings:write");
+        try {
+          const draft = await this.env.DRAFTS.getByName(
+            draftObjectName(auth.organizationId, draftId),
+          ).revokePreview(auth.organizationId, auth.claims.sub);
+          return draftResult(draft);
+        } catch (error: unknown) {
+          return toolError(error);
+        }
+      },
+    );
     return Promise.resolve();
   }
 
@@ -142,7 +164,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
     if (authMode === "local") {
       return {
         claims: { email: "local@skydeo.invalid", name: "Local developer", sub: "local-dev" },
-        organizationId: "skydeo",
+        organizationId: this.env.ORGANIZATION_ID,
         permissions: ["landings:read", "landings:write"],
       };
     }
@@ -155,10 +177,6 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
   }
 }
 
-function draftObjectName(organizationId: string, draftId: string): string {
-  return `draft:${organizationId}:${draftId}`;
-}
-
 function draftResult(draft: DraftRecord) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(toPublicDraft(draft), null, 2) }],
@@ -167,13 +185,21 @@ function draftResult(draft: DraftRecord) {
 }
 
 function toPublicDraft(draft: DraftRecord) {
+  const previewState = previewLifecycleState(draft);
   return {
     base_revision: draft.baseRevision,
     created_at: new Date(draft.createdAt).toISOString(),
     current_revision: draft.currentRevision,
     draft_id: draft.id,
     hostname: draft.hostname,
-    preview_url: draft.previewUrl,
+    preview_state: previewState,
+    preview_url: previewState === "active" ? draft.previewUrl : null,
+    expires_at: new Date(draft.previewExpiresAt).toISOString(),
+    revoked_at:
+      draft.previewRevokedAt === null ? null : new Date(draft.previewRevokedAt).toISOString(),
+    cleanup_status: draft.previewCleanupStatus,
+    cleaned_up_at:
+      draft.previewCleanedAt === null ? null : new Date(draft.previewCleanedAt).toISOString(),
     production_url: null,
     publish_available: false,
     status: draft.status,

@@ -3,7 +3,14 @@ import { getSandbox, proxyToSandbox } from "@cloudflare/sandbox";
 import { handleAccessRequest } from "./auth/access-handler";
 import { requirePreviewAccess, stripPreviewCredentials } from "./auth/preview-access";
 import { LANDING_SCOPES } from "./auth/scopes";
-import { isProductionPreviewHostname, parseLocalPreviewRoute } from "./drafts/preview-url";
+import { draftObjectName } from "./drafts/draft-object-name";
+import { requireActivePreviewRoute } from "./drafts/preview-authorization";
+import {
+  isProductionPreviewHostname,
+  parseLocalPreviewRoute,
+  parseProductionPreviewRoute,
+  type ProductionPreviewRoute,
+} from "./drafts/preview-url";
 import { LandingMcp } from "./mcp/landing-mcp";
 
 export { Sandbox } from "@cloudflare/sandbox";
@@ -35,7 +42,8 @@ export default {
     const localPreviewRoute =
       authMode === "local" ? parseLocalPreviewRoute(url) : null;
     if (localPreviewRoute !== null) {
-      return proxyLocalPreview(request, env, localPreviewRoute);
+      const lifecycleFailure = await requireActivePreview(env, localPreviewRoute);
+      return lifecycleFailure ?? proxyLocalPreview(request, env, localPreviewRoute);
     }
 
     if (isProductionPreviewHostname(url.hostname, env.PREVIEW_HOSTNAME)) {
@@ -52,6 +60,15 @@ export default {
       const accessFailure = await requirePreviewAccess(request, env);
       if (accessFailure !== null) {
         return accessFailure;
+      }
+
+      const previewRoute = parseProductionPreviewRoute(url, env.PREVIEW_HOSTNAME);
+      if (previewRoute === null) {
+        return new Response("Preview not found", { status: 404 });
+      }
+      const lifecycleFailure = await requireActivePreview(env, previewRoute);
+      if (lifecycleFailure !== null) {
+        return lifecycleFailure;
       }
 
       const sandboxPreview = await proxyToSandbox(stripPreviewCredentials(request), env);
@@ -91,6 +108,20 @@ interface LocalPreviewRoute {
   revision: string;
   sandboxId: string;
   token: string;
+}
+
+async function requireActivePreview(
+  env: Env,
+  route: ProductionPreviewRoute,
+): Promise<Response | null> {
+  return requireActivePreviewRoute(
+    env.ORGANIZATION_ID,
+    route,
+    (draftId, revision) =>
+      env.DRAFTS.getByName(
+        draftObjectName(env.ORGANIZATION_ID, draftId),
+      ).authorizePreview(env.ORGANIZATION_ID, revision),
+  );
 }
 
 async function proxyLocalPreview(

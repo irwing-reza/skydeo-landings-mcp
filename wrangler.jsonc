@@ -6,7 +6,9 @@
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "MCP_AUTH_MODE": "access",
+    "ORGANIZATION_ID": "skydeo",
     "PREVIEW_HOSTNAME": "landing-mcp.skydeo.com",
+    "PREVIEW_TTL_SECONDS": "86400",
     "PREVIEW_ACCESS_JWKS_URL": "https://rough-feather-4050.cloudflareaccess.com/cdn-cgi/access/certs",
   },
   "routes": [

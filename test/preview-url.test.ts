@@ -4,6 +4,7 @@ import {
   buildPreviewUrl,
   isProductionPreviewHostname,
   parseLocalPreviewRoute,
+  parseProductionPreviewRoute,
 } from "../src/drafts/preview-url";
 
 const REVISION = "5e8e4ef57cf5e73055be304f6eef4a403d242eb56ee88c7cdccd177d1051b48a";
@@ -70,5 +71,30 @@ describe("preview URLs", () => {
     expect(
       isProductionPreviewHostname("preview.attacker.example", "landing-mcp.skydeo.com"),
     ).toBe(false);
+  });
+
+  it("parses a production preview into its Sandbox and immutable revision", () => {
+    expect(
+      parseProductionPreviewRoute(
+        new URL(
+          `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/${REVISION}`,
+        ),
+        "landing-mcp.skydeo.com",
+      ),
+    ).toEqual({
+      revision: REVISION,
+      sandboxId: "skydeo-14de4f8f27054cd5afb2deb9ded5057e",
+    });
+  });
+
+  it("rejects malformed production preview paths", () => {
+    expect(
+      parseProductionPreviewRoute(
+        new URL(
+          `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/${REVISION}/extra`,
+        ),
+        "landing-mcp.skydeo.com",
+      ),
+    ).toBeNull();
   });
 });

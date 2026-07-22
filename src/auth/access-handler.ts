@@ -182,7 +182,7 @@ export async function handleAccessRequest(
 			// This will be available on this.props inside MyMCP
 			props: {
 				claims: user,
-				organizationId: "skydeo",
+				organizationId: env.ORGANIZATION_ID,
 				permissions,
 			} satisfies AuthContext,
 			request: oauthReqInfo,

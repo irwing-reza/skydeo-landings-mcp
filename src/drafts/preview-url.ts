@@ -25,6 +25,11 @@ export interface LocalPreviewRoute {
   token: string;
 }
 
+export interface ProductionPreviewRoute {
+  revision: string;
+  sandboxId: string;
+}
+
 export function isProductionPreviewHostname(hostname: string, previewHostname: string): boolean {
   const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
   const normalizedPreviewHostname = previewHostname
@@ -42,6 +47,29 @@ export function isProductionPreviewHostname(hostname: string, previewHostname: s
 
   const label = normalizedHostname.slice(0, -suffix.length);
   return label.length > 0 && !label.includes(".");
+}
+
+export function parseProductionPreviewRoute(
+  url: URL,
+  previewHostname: string,
+): ProductionPreviewRoute | null {
+  if (!isProductionPreviewHostname(url.hostname, previewHostname)) {
+    return null;
+  }
+
+  const hostLabel = url.hostname.slice(0, url.hostname.indexOf("."));
+  const route = parseExposedHostLabel(hostLabel);
+  const [revision, ...extraSegments] = url.pathname.replace(/^\//, "").split("/");
+  if (
+    route === null ||
+    revision === undefined ||
+    !/^[a-f0-9]{64}$/.test(revision) ||
+    extraSegments.length > 0
+  ) {
+    return null;
+  }
+
+  return { revision, sandboxId: route.sandboxId };
 }
 
 export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
@@ -62,6 +90,20 @@ export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
     return null;
   }
 
+  const exposedRoute = parseExposedHostLabel(exposedHostLabel);
+  if (exposedRoute === null) {
+    return null;
+  }
+  if (!/^[a-f0-9]{64}$/.test(revision)) {
+    return null;
+  }
+
+  return { ...exposedRoute, revision };
+}
+
+function parseExposedHostLabel(
+  exposedHostLabel: string,
+): Omit<LocalPreviewRoute, "revision"> | null {
   const firstHyphen = exposedHostLabel.indexOf("-");
   const lastHyphen = exposedHostLabel.lastIndexOf("-");
   if (firstHyphen <= 0 || lastHyphen <= firstHyphen) {
@@ -79,13 +121,12 @@ export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
     !/^[a-z0-9-]+$/.test(sandboxId) ||
     token.length === 0 ||
     token.length > 16 ||
-    !/^[a-z0-9_]+$/.test(token) ||
-    !/^[a-f0-9]{64}$/.test(revision)
+    !/^[a-z0-9_]+$/.test(token)
   ) {
     return null;
   }
 
-  return { port, revision, sandboxId, token };
+  return { port, sandboxId, token };
 }
 
 function isLocalPreviewHostname(hostname: string): boolean {

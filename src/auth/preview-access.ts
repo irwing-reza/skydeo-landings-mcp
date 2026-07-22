@@ -9,7 +9,15 @@ const PREVIEW_CREDENTIAL_HEADERS = [
   "cookie",
 ] as const;
 
-export async function requirePreviewAccess(request: Request, env: Env): Promise<Response | null> {
+interface PreviewAccessEnv {
+  PREVIEW_ACCESS_AUD: string;
+  PREVIEW_ACCESS_JWKS_URL: string;
+}
+
+export async function requirePreviewAccess(
+  request: Request,
+  env: PreviewAccessEnv,
+): Promise<Response | null> {
   const token = request.headers.get(ACCESS_ASSERTION_HEADER);
   if (token === null) {
     return unauthorizedPreview("missing_access_assertion");

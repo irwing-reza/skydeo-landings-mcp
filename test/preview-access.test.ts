@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 
-import { stripPreviewCredentials } from "../src/auth/preview-access";
+import { requirePreviewAccess, stripPreviewCredentials } from "../src/auth/preview-access";
 
 describe("preview credential forwarding", () => {
+  it("returns an Access challenge for a signed-out user", async () => {
+    const response = await requirePreviewAccess(
+      new Request("https://preview.example/revision"),
+      {
+        PREVIEW_ACCESS_AUD: "preview-audience",
+        PREVIEW_ACCESS_JWKS_URL: "https://access.example/certs",
+      },
+    );
+
+    expect(response?.status).toBe(401);
+    expect(response?.headers.get("www-authenticate")).toContain("Cloudflare-Access");
+  });
+
   it("removes identity credentials before the request enters the Sandbox", () => {
     const request = new Request("https://preview.example/revision", {
       headers: {

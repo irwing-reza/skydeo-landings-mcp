@@ -236,3 +236,6 @@ in this repository.
 
 Access membership authenticates a Skydeo team member. Individual MCP tools must
 still check the applicable scope before reading, changing, or publishing a draft.
+Authentication alone does not make a preview available: after Access verification,
+the Worker asks the owning `DraftCoordinator` for its lifecycle state. Expired,
+revoked, and cleaned-up previews return `410` and are never proxied to the Sandbox.
