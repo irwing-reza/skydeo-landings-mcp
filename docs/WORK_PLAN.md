@@ -1,0 +1,367 @@
+# Skydeo Landing MCP work plan
+
+This document is the tracked implementation plan for turning the current draft
+and preview foundation into one user-facing landing-page workflow. Update the
+status table and milestone checklists as work lands.
+
+## Product outcome
+
+Users should be able to describe a new landing page or an update to an existing
+page in natural language and move through one coherent experience:
+
+```text
+request -> resolve page -> draft -> validate -> preview -> revise
+        -> request publish -> confirm -> repository automation
+```
+
+Headline, copy, CTA, SEO, image, and source-edit operations are internal details.
+Users should not have to select or sequence those operations themselves.
+
+The intended public MCP boundary is:
+
+- `manage_landing` for discovery, new pages, existing-page updates, previews,
+  revisions, status, and publish requests.
+- `confirm_publish` as a separate, explicit, auditable production boundary.
+
+## Current status
+
+| Area | Status | Notes |
+| --- | --- | --- |
+| Production authentication | Complete | Cloudflare Access-backed OAuth and scoped tools |
+| Protected previews | Complete | Access assertion and lifecycle checks before proxying |
+| Preview lifecycle | Complete | TTL, revoke, alarms, cleanup, structured events |
+| Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
+| Production lifecycle verification | Pending authorization | Must create and destroy disposable production drafts |
+| Canonical repository integration | Pending | Remote and clean pinned SHA must be confirmed |
+| Unified landing workflow | Planned | `manage_landing` contract not implemented |
+| Repository-backed previews | Planned | Current drafts still accept complete HTML |
+| Structured editing | Planned | Internal operations not implemented |
+| Publish approval and adapter | Planned | No production publishing capability exists |
+| Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
+
+## Known repository candidates
+
+The inspected `skydeo-landings` checkout contains these remotes:
+
+- likely canonical: `git@github.com:skydeo-aviato/skydeo-landings.git`
+- personal fork: `git@github.com:irwing-reza/skydeo-landings.git`
+
+The inspected checkout was at
+`985a83fbffd6f2165a86095f266b5cdaae0ee551`, but it also contained a local
+`wrangler.jsonc` modification. Confirm the canonical remote and clean base SHA
+before using either value in service configuration.
+
+## Milestone 1: Confirm the repository boundary
+
+**Status: In progress**
+
+- [ ] Confirm the canonical remote URL.
+- [ ] Confirm the clean initial commit SHA.
+- [ ] Choose read-only checkout credentials for draft workspaces.
+- [ ] Choose narrowly scoped write credentials for publishing.
+- [ ] Confirm `npm run check` and `npm run build` as canonical validation.
+- [ ] Decide whether publishing creates pull requests or controlled direct commits.
+- [ ] Define how the base SHA advances after canonical releases.
+
+Acceptance criteria:
+
+- Every draft records an immutable remote URL and base SHA.
+- No draft begins from a floating branch or dirty local checkout.
+- Checkout credentials cannot publish.
+- Publishing credentials are unavailable to ordinary preview operations.
+
+## Milestone 2: Define the unified workflow contract
+
+**Status: Planned**
+
+Define `manage_landing` around workflow state rather than exposing many editing
+tools. A provisional request shape is:
+
+```ts
+{
+  request: string;
+  draft_id?: string;
+  expected_revision?: string;
+}
+```
+
+Provisional workflow states:
+
+- `awaiting_details`
+- `preparing_workspace`
+- `editing`
+- `validation_failed`
+- `preview_ready`
+- `awaiting_publish_confirmation`
+- `publishing`
+- `published`
+- `failed`
+
+Every response should include the resolved page identity, draft ID, immutable
+revision, concise change summary, validation status, available preview URL, and
+the next user action.
+
+Acceptance criteria:
+
+- One natural-language request can start either a new-page or update flow.
+- Continuing revisions require only `draft_id`, expected revision, and intent.
+- The model does not need to expose internal editing primitives to users.
+- Publishing cannot occur through an ordinary update request.
+
+## Milestone 3: Resolve intent and page identity
+
+**Status: Planned**
+
+Classify requests as:
+
+- create a new landing page;
+- update an existing page;
+- continue an existing draft;
+- inspect workflow status; or
+- request publishing.
+
+Resolve existing pages in this order:
+
+1. exact production URL;
+2. registered hostname;
+3. subdomain;
+4. known page or product name; and
+5. source path.
+
+If one page matches confidently, continue. If multiple pages match, ask one
+consolidated question. Never silently choose between ambiguous production pages.
+
+Acceptance criteria:
+
+- `TacoGraph`, `tacograph`, and `https://tacograph.skydeo.com/` resolve to
+  `src/domains/tacograph/pages/index.astro`.
+- A vague but uniquely resolved update request returns a page summary and one
+  request for the desired changes.
+- No Sandbox is created until the request contains an actionable change.
+- A new-page request cannot accidentally overwrite an occupied repository route.
+
+## Milestone 4: Create repository-backed draft workspaces
+
+**Status: Planned**
+
+- [ ] Create one stable Sandbox per draft.
+- [ ] Clone or fetch the configured canonical repository.
+- [ ] Check out the exact pinned base SHA in detached mode.
+- [ ] Persist remote, base SHA, page path, hostname, actor, and workspace ID.
+- [ ] Install dependencies deterministically.
+- [ ] Reuse the workspace for later revisions of the same draft.
+- [ ] Represent revisions using repository tree state rather than arbitrary HTML.
+- [ ] Connect workspace destruction to the existing preview lifecycle.
+
+Acceptance criteria:
+
+- Draft source is reproducible from its stored base SHA and change record.
+- Repository credentials and build output never enter preview responses.
+- Expired and revoked drafts destroy their repository workspaces.
+- Repeated cleanup remains idempotent.
+
+## Milestone 5: Implement the new-page branch
+
+**Status: Planned**
+
+Port the policies from the repository's `new-landing-page` and `shape-seo`
+skills into the service workflow:
+
+- infer or collect the title and exact production URL;
+- perform repository-only URL availability checks;
+- ask at most one consolidated intake question;
+- create an internal SEO brief;
+- inspect design guidance, tokens, layouts, and approved brand assets;
+- create the final routed Astro page directly;
+- add only an exact custom domain when required;
+- update routing documentation when routing changes; and
+- validate and return one preview without deploying.
+
+Acceptance criteria:
+
+- The user experiences one workflow rather than two separate skills.
+- New pages preserve the existing repository's SEO and brand rules.
+- The workflow never queries or mutates production infrastructure for URL checks.
+- New-page previews do not require a duplicate static HTML implementation.
+
+## Milestone 6: Implement the existing-page update branch
+
+**Status: Planned**
+
+For a vague request such as “I want to update the TacoGraph page”:
+
+1. resolve the existing route;
+2. inspect its current structure and metadata;
+3. return a compact page summary; and
+4. ask one question requesting all desired changes.
+
+For a concrete request, proceed directly to a repository-backed draft without a
+new-URL check or full SEO intake unless those concerns are part of the request.
+
+Acceptance criteria:
+
+- Existing routes are never treated as new pages.
+- Unrelated page content and routing configuration remain unchanged.
+- Vague requests do not create unnecessary containers.
+- Concrete requests reach a validated preview without an extra approval gate.
+
+## Milestone 7: Add internal structured editing operations
+
+**Status: Planned**
+
+Initial internal operations:
+
+- `replace_headline`
+- `update_copy`
+- `update_cta`
+- `update_seo_metadata`
+- `replace_image`
+- `apply_page_change` for bounded layout or source changes
+
+Each operation must target a resolved page and known section, preserve unrelated
+source, validate the expected revision, and produce a structured change record.
+Ambiguous or excessively broad changes should return `awaiting_details` rather
+than guessing across the repository.
+
+Acceptance criteria:
+
+- Operations compose within one edit request.
+- Every revision has a human-readable and machine-readable change summary.
+- Image changes use approved or explicitly supplied assets.
+- The bounded escape hatch cannot edit deployment or unrelated application files.
+
+## Milestone 8: Complete the validate, preview, and revise loop
+
+**Status: Planned**
+
+After each edit batch:
+
+1. run any required generation or formatting;
+2. run `npm run check`;
+3. run `npm run build`;
+4. start or reuse the Astro preview;
+5. inspect the affected route;
+6. persist an immutable revision; and
+7. return the preview and change summary.
+
+Subsequent requests reuse the same `draft_id` and require `expected_revision`.
+Revision conflicts fail rather than silently overwriting another edit.
+
+Acceptance criteria:
+
+- Invalid builds never replace the last valid preview revision.
+- Preview URLs remain revision-bound and lifecycle-protected.
+- Users can iterate in natural language without starting a new workflow.
+- Validation failures provide actionable, non-secret diagnostics.
+
+## Milestone 9: Add publish request and confirmation records
+
+**Status: Planned**
+
+`manage_landing` may request publishing but must not complete it. A publish
+request should record and return:
+
+- hostname and page path;
+- base and proposed revision;
+- files changed;
+- validation results;
+- preview URL;
+- intended publish method; and
+- an expiring, one-time confirmation token.
+
+`confirm_publish` must recheck actor, organization, `landings:publish`
+permission, token validity, revision equality, repository target, validation
+identity, and idempotency state.
+
+Acceptance criteria:
+
+- No natural-language phrase alone causes production publication.
+- Expired, reused, or revision-mismatched tokens fail closed.
+- Publish confirmation is auditable and bound to one immutable revision.
+- Repeated confirmation cannot create duplicate commits or pull requests.
+
+## Milestone 10: Implement the repository publishing adapter
+
+**Status: Planned**
+
+- [ ] Create a scoped branch or commit after confirmation.
+- [ ] Include only files authorized by the draft change record.
+- [ ] Push with narrowly scoped service credentials.
+- [ ] Create a pull request unless controlled direct commits are explicitly chosen.
+- [ ] Track CI and repository deployment status asynchronously.
+- [ ] Persist commit SHA, pull-request URL, deployment IDs, and production URL.
+- [ ] Let repository automation deploy rather than calling Cloudflare deployment
+      APIs from the MCP Worker.
+
+Acceptance criteria:
+
+- Publishing is retryable and idempotent.
+- Repository or CI failures do not lose the approved draft state.
+- The MCP can report progress after the initiating session disconnects.
+- Production state links back to the approving actor and immutable draft revision.
+
+## Milestone 11: Verification matrix
+
+**Status: Planned**
+
+Add automated and container-backed verification for:
+
+- new-page and existing-page intent resolution;
+- exact, fuzzy, and ambiguous page identity;
+- vague versus actionable update requests;
+- each structured edit operation;
+- exact-SHA repository checkout;
+- validation and build failures;
+- immutable preview revisions;
+- concurrent revision conflicts;
+- revocation or expiration during a build;
+- publish-token expiry, reuse, and revision mismatch;
+- commit or pull-request idempotency;
+- cleanup after successful and failed workflows; and
+- the complete TacoGraph update workflow.
+
+The end-to-end TacoGraph scenario is:
+
+```text
+“Update the TacoGraph page”
+-> resolve the existing page
+-> summarize and request desired changes
+-> apply a concrete headline, copy, or CTA request
+-> validate and preview
+-> accept another revision
+-> request publish
+-> confirm the immutable revision
+-> create the repository change
+-> report automation status
+```
+
+## Milestone 12: Reconcile fleet-wide orphan Sandboxes
+
+**Status: Planned**
+
+This is separate from ordinary per-draft cleanup:
+
+- [ ] inventory Sandbox instances from an authoritative fleet source;
+- [ ] match ownership labels to reachable draft records;
+- [ ] protect active, recent, or uncertain instances;
+- [ ] produce a non-destructive dry-run report;
+- [ ] require explicit enablement for deletion;
+- [ ] delete only in bounded batches; and
+- [ ] emit auditable reconciliation events.
+
+Acceptance criteria:
+
+- Dry-run mode is the default.
+- No active or uncertain Sandbox is deleted.
+- Every deletion has an ownership decision and audit event.
+- Repeated sweeps are safe and idempotent.
+
+## Immediate next actions
+
+1. Confirm the canonical remote and clean base SHA.
+2. Write the typed `manage_landing` request, result, and workflow-state contract.
+3. Implement deterministic repository page discovery and TacoGraph resolution.
+4. Add tests for new/update/status/publish intent classification.
+5. Begin the repository-backed workspace slice only after the boundary inputs are
+   confirmed.
+

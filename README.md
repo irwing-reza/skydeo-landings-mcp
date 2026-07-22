@@ -10,6 +10,8 @@ Skydeo landing pages through Model Context Protocol clients.
   trust boundaries, request flow, and implementation status
 - [`docs/LIFECYCLE_VERIFICATION.md`](docs/LIFECYCLE_VERIFICATION.md) — real
   alarm/container smoke tests and the production verification gate
+- [`docs/WORK_PLAN.md`](docs/WORK_PLAN.md) — tracked implementation milestones for
+  the unified create, update, preview, revise, and publish workflow
 
 ## Current milestone
 

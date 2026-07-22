@@ -13,6 +13,8 @@ which parts are already present in the repository.
 - [Preview lifecycle verification](LIFECYCLE_VERIFICATION.md) — safe local and
   explicitly authorized production smoke tests for expiry, revocation, alarms,
   and Sandbox cleanup.
+- [Work plan](WORK_PLAN.md) — tracked milestones for the unified landing workflow,
+  repository-backed drafts, publishing, verification, and orphan reconciliation.
 
 ## Status language
 
