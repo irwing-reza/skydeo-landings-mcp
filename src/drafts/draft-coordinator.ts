@@ -4,6 +4,7 @@ import { getSandbox } from "@cloudflare/sandbox";
 import {
   assertDraftTransition,
   isDraftStatus,
+  isRepositoryWorkspaceStatus,
   type DraftRecord,
   type DraftStatus,
 } from "../domain/draft";
@@ -17,6 +18,11 @@ import {
 } from "../domain/preview-lifecycle";
 import { previewSandboxId } from "./preview-sandbox-id";
 import { buildPreviewUrl } from "./preview-url";
+import {
+  assertRepositoryPagePath,
+  prepareRepositoryCheckout,
+  repositoryWorkspaceConfig,
+} from "../repository/workspace";
 
 interface DraftRow extends Record<string, SqlStorageValue> {
   id: string;
@@ -30,6 +36,13 @@ interface DraftRow extends Record<string, SqlStorageValue> {
   preview_url: string | null;
   production_url: string | null;
   html: string;
+  repository_remote_url: string | null;
+  repository_release_ref: string | null;
+  repository_base_sha: string | null;
+  repository_page_path: string | null;
+  repository_workspace_id: string | null;
+  repository_workspace_status: string | null;
+  repository_prepared_at: number | null;
   preview_expires_at: number | null;
   preview_revoked_at: number | null;
   preview_cleanup_status: string;
@@ -49,6 +62,11 @@ export interface UpdateDraftInput {
   html: string;
   previewHostname: string;
 }
+
+export type CreateRepositoryDraftInput = Pick<
+  DraftRecord,
+  "id" | "organizationId" | "createdBy" | "hostname"
+> & { pagePath: string };
 
 export interface PreviewAuthorization {
   allowed: boolean;
@@ -108,6 +126,13 @@ export class DraftCoordinator extends DurableObject<Env> {
           preview_url TEXT,
           production_url TEXT,
           html TEXT NOT NULL DEFAULT '',
+          repository_remote_url TEXT,
+          repository_release_ref TEXT,
+          repository_base_sha TEXT,
+          repository_page_path TEXT,
+          repository_workspace_id TEXT,
+          repository_workspace_status TEXT,
+          repository_prepared_at INTEGER,
           preview_expires_at INTEGER,
           preview_revoked_at INTEGER,
           preview_cleanup_status TEXT NOT NULL DEFAULT 'scheduled',
@@ -120,6 +145,13 @@ export class DraftCoordinator extends DurableObject<Env> {
         .exec<{ name: string }>("PRAGMA table_info(draft)")
         .toArray();
       this.ensureColumn(columns, "html", "TEXT NOT NULL DEFAULT ''");
+      this.ensureColumn(columns, "repository_remote_url", "TEXT");
+      this.ensureColumn(columns, "repository_release_ref", "TEXT");
+      this.ensureColumn(columns, "repository_base_sha", "TEXT");
+      this.ensureColumn(columns, "repository_page_path", "TEXT");
+      this.ensureColumn(columns, "repository_workspace_id", "TEXT");
+      this.ensureColumn(columns, "repository_workspace_status", "TEXT");
+      this.ensureColumn(columns, "repository_prepared_at", "INTEGER");
       this.ensureColumn(columns, "preview_expires_at", "INTEGER");
       this.ensureColumn(columns, "preview_revoked_at", "INTEGER");
       this.ensureColumn(
@@ -184,6 +216,107 @@ export class DraftCoordinator extends DurableObject<Env> {
     const draft = this.requireOrganization(organizationId);
     await this.ensureCleanupAlarm(draft);
     return draft;
+  }
+
+  /**
+   * Internal repository-workspace entrypoint. It is intentionally not exposed by
+   * an MCP tool until repository-backed editing can complete end to end.
+   */
+  async createRepositoryDraft(input: CreateRepositoryDraftInput): Promise<DraftRecord> {
+    if (this.readDraft() !== null) {
+      throw new Error("Draft already exists");
+    }
+
+    const config = repositoryWorkspaceConfig(this.env);
+    assertRepositoryPagePath(input.pagePath);
+    const workspaceId = previewSandboxId(input.organizationId, input.id);
+    const now = Date.now();
+    const previewExpiresAt = now + previewTtlMilliseconds(this.env.PREVIEW_TTL_SECONDS);
+    this.ctx.storage.sql.exec(
+      `INSERT INTO draft (
+        id, organization_id, created_by, hostname, status, base_revision,
+        current_revision, approved_revision, preview_url, production_url, html,
+        repository_remote_url, repository_release_ref, repository_base_sha,
+        repository_page_path, repository_workspace_id, repository_workspace_status,
+        repository_prepared_at, preview_expires_at, preview_revoked_at,
+        preview_cleanup_status, preview_cleaned_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'draft', ?, ?, NULL, NULL, NULL, '', ?, ?, ?, ?, ?,
+        'preparing', NULL, ?, NULL, 'scheduled', NULL, ?, ?)`,
+      input.id,
+      input.organizationId,
+      input.createdBy,
+      input.hostname,
+      config.baseSha,
+      config.baseSha,
+      config.remoteUrl,
+      config.releaseRef,
+      config.baseSha,
+      input.pagePath,
+      workspaceId,
+      previewExpiresAt,
+      now,
+      now,
+    );
+    this.logEvent("repository_workspace_preparing", { workspaceId });
+
+    const sandbox = getSandbox(this.env.Sandbox, workspaceId, {
+      labels: { draftId: input.id, organizationId: input.organizationId },
+      normalizeId: true,
+    });
+
+    try {
+      await prepareRepositoryCheckout(
+        sandbox,
+        config,
+        this.env.REPOSITORY_CHECKOUT_TOKEN,
+      );
+      const preparedAt = Date.now();
+      this.ctx.storage.sql.exec(
+        `UPDATE draft
+         SET repository_workspace_status = 'ready', repository_prepared_at = ?,
+             updated_at = ?
+         WHERE id = ?`,
+        preparedAt,
+        preparedAt,
+        input.id,
+      );
+      const draft = this.requireDraft();
+      await this.ensureCleanupAlarm(draft);
+      this.logEvent("repository_workspace_ready", {
+        revision: config.baseSha,
+        workspaceId,
+      });
+      return draft;
+    } catch (error: unknown) {
+      let cleanupComplete = false;
+      try {
+        await sandbox.destroy();
+        cleanupComplete = true;
+      } catch {
+        // The persisted failed cleanup state schedules an alarm retry.
+      }
+      const failedAt = Date.now();
+      this.ctx.storage.sql.exec(
+        `UPDATE draft
+         SET status = 'failed', repository_workspace_status = 'failed',
+             preview_expires_at = ?, preview_cleanup_status = ?,
+             preview_cleaned_at = ?, updated_at = ?
+         WHERE id = ?`,
+        failedAt,
+        cleanupComplete ? "complete" : "failed",
+        cleanupComplete ? failedAt : null,
+        failedAt,
+        input.id,
+      );
+      const failed = this.requireDraft();
+      await this.ensureCleanupAlarm(failed);
+      this.logEvent("repository_workspace_failed", {
+        cleanupComplete: cleanupComplete ? 1 : 0,
+        error: error instanceof Error ? error.message : "Unknown checkout failure",
+        workspaceId,
+      });
+      throw error;
+    }
   }
 
   async update(input: UpdateDraftInput): Promise<DraftRecord> {
@@ -483,6 +616,16 @@ function toDraftRecord(row: DraftRow): DraftRecord {
     previewUrl: row.preview_url,
     productionUrl: row.production_url,
     html: row.html,
+    repositoryRemoteUrl: row.repository_remote_url,
+    repositoryReleaseRef: row.repository_release_ref,
+    repositoryBaseSha: row.repository_base_sha,
+    repositoryPagePath: row.repository_page_path,
+    repositoryWorkspaceId: row.repository_workspace_id,
+    repositoryWorkspaceStatus:
+      row.repository_workspace_status === null
+        ? null
+        : requireRepositoryWorkspaceStatus(row.repository_workspace_status),
+    repositoryPreparedAt: row.repository_prepared_at,
     previewExpiresAt: row.preview_expires_at,
     previewRevokedAt: row.preview_revoked_at,
     previewCleanupStatus: row.preview_cleanup_status,
@@ -490,4 +633,11 @@ function toDraftRecord(row: DraftRow): DraftRecord {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function requireRepositoryWorkspaceStatus(value: string) {
+  if (!isRepositoryWorkspaceStatus(value)) {
+    throw new Error(`Stored draft has an invalid repository workspace status: ${value}`);
+  }
+  return value;
 }

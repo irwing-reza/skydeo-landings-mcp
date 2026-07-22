@@ -8,8 +8,12 @@ RUN apt-get update \
   && apt-get install --yes --no-install-recommends ca-certificates git \
   && rm -rf /var/lib/apt/lists/*
 
+COPY scripts/git-askpass-readonly.sh /usr/local/bin/git-askpass-readonly
+COPY scripts/prepare-readonly-repository.sh /usr/local/bin/prepare-readonly-repository
+RUN chmod 0555 /usr/local/bin/git-askpass-readonly \
+  /usr/local/bin/prepare-readonly-repository
+
 WORKDIR /workspace
 EXPOSE 4321
 
 ENTRYPOINT ["/sandbox"]
-

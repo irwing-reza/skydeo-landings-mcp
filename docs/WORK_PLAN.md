@@ -34,7 +34,7 @@ The intended public MCP boundary is:
 | Production lifecycle verification | Conditionally authorized | Run one disposable test only after repository-backed cleanup and preflight checks are complete |
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
 | Unified landing workflow | In progress | `manage_landing` now provides deterministic initial discovery and persisted legacy-draft status; repository-backed mutation remains pending |
-| Repository-backed previews | Planned | Current drafts still accept complete HTML |
+| Repository-backed previews | In progress | Exact-SHA workspace persistence and cleanup are implemented internally; repository editing and Astro previews are not connected |
 | Structured editing | Planned | Internal operations not implemented |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
@@ -167,16 +167,28 @@ Acceptance criteria:
 
 ## Milestone 4: Create repository-backed draft workspaces
 
-**Status: Planned**
+**Status: Exact-SHA workspace foundation implemented; editing integration pending**
 
-- [ ] Create one stable Sandbox per draft.
-- [ ] Clone or fetch the configured canonical repository.
-- [ ] Check out the exact pinned base SHA in detached mode.
-- [ ] Persist remote, base SHA, page path, hostname, actor, and workspace ID.
+- [x] Create one stable Sandbox per draft.
+- [x] Clone or fetch the configured canonical repository.
+- [x] Check out the exact pinned base SHA in detached mode.
+- [x] Persist remote, base SHA, page path, hostname, actor, and workspace ID.
 - [ ] Install dependencies deterministically.
 - [ ] Reuse the workspace for later revisions of the same draft.
 - [ ] Represent revisions using repository tree state rather than arbitrary HTML.
-- [ ] Connect workspace destruction to the existing preview lifecycle.
+- [x] Connect workspace destruction to the existing preview lifecycle.
+
+The internal repository-draft entrypoint reads the canonical boundary only from
+typed Worker configuration. It obtains the checkout PAT only from the required
+`REPOSITORY_CHECKOUT_TOKEN` Worker secret and passes it to a fixed Sandbox
+command as an invocation-scoped environment variable. The PAT is never accepted
+through MCP or persisted. Failed partial checkouts are destroyed immediately;
+successful but abandoned repository workspaces share the existing TTL, revoke,
+alarm, and idempotent Sandbox destruction path. Public repository mutation
+remains fail closed until deterministic install, editing, validation, and preview
+rendering are connected. The checkout helper safely verifies the existing
+detached workspace when invoked again, but revision reuse is not marked complete
+until the edit loop calls it.
 
 Acceptance criteria:
 
@@ -389,11 +401,13 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Design secret provisioning so draft workspaces receive only the repository-
-   scoped read-only checkout token and never the publishing identity.
-2. Begin exact-SHA repository workspace persistence at
-   `010829fa4235fb312e6706d0c8a050c2f8084499` in detached mode.
-3. Implement repository-backed cleanup before exercising the conditional
-   production lifecycle authorization.
-4. Keep `manage_landing` create, edit, and publish-request branches fail closed
+1. Provision the repository-scoped read-only checkout token as the
+   `REPOSITORY_CHECKOUT_TOKEN` Worker secret without recording its value.
+2. Add deterministic dependency installation and canonical validation inside the
+   exact-SHA workspace.
+3. Connect one actionable existing-page update to repository-backed draft
+   creation and Astro preview rendering.
+4. Add explicit repository-workspace preflight checks, then exercise the
+   conditionally authorized disposable production lifecycle test.
+5. Keep `manage_landing` create, edit, and publish-request branches fail closed
    until the corresponding durable workflow operations exist.

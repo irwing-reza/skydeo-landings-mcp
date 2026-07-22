@@ -10,6 +10,9 @@
     "PREVIEW_HOSTNAME": "landing-mcp.skydeo.com",
     "PREVIEW_TTL_SECONDS": "86400",
     "PREVIEW_ACCESS_JWKS_URL": "https://rough-feather-4050.cloudflareaccess.com/cdn-cgi/access/certs",
+    "REPOSITORY_REMOTE_URL": "git@github.com:irwing-reza/skydeo-landings.git",
+    "REPOSITORY_RELEASE_REF": "refs/heads/master",
+    "REPOSITORY_BASE_SHA": "010829fa4235fb312e6706d0c8a050c2f8084499",
   },
   "routes": [
     {
@@ -76,6 +79,7 @@
       "ACCESS_JWKS_URL",
       "PREVIEW_ACCESS_AUD",
       "COOKIE_ENCRYPTION_KEY",
+      "REPOSITORY_CHECKOUT_TOKEN",
     ],
   },
 }

@@ -69,3 +69,22 @@ are complete.
 
 No Cloudflare production state was queried or changed while recording these
 decisions. GitHub access was read-only.
+
+## Checkout credential provisioning
+
+The read-only fine-grained PAT is provisioned only as the Worker secret
+`REPOSITORY_CHECKOUT_TOKEN`. Its value must be entered interactively with
+`wrangler secret put`; it must never be placed in `wrangler.jsonc`, `.dev.vars`,
+source, an MCP request, or a draft record. Provisioning and rotating this secret
+does not authorize provisioning or exposing the separate publishing identity.
+
+For each exact-SHA fetch, the Worker passes the secret as a per-command Sandbox
+environment variable to a fixed container script. Git receives it through a
+fixed `GIT_ASKPASS` helper with credential helpers disabled. The remote stored in
+Git configuration is a credential-free HTTPS URL, while the draft record retains
+the confirmed canonical SSH remote. The helper unsets the token immediately
+after fetch, and checkout output is reduced to the verified commit SHA.
+
+The implementation is intentionally dormant until the token is provisioned and
+the unified repository-backed edit flow is connected. Ordinary preview
+workspaces never receive the publishing GitHub App identity.
