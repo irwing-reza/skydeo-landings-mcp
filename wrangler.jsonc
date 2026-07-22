@@ -1,0 +1,74 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "skydeo-landing-mcp",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "vars": {
+    // A deployed scaffold must remain closed until OAuth wraps the MCP route.
+    "MCP_AUTH_MODE": "disabled",
+    "PREVIEW_HOSTNAME": "landing-mcp.skydeo.com"
+  },
+  "routes": [
+    {
+      "pattern": "landing-mcp.skydeo.com",
+      "custom_domain": true
+    }
+  ],
+  "kv_namespaces": [
+    {
+      // Add the production namespace ID before enabling MCP_AUTH_MODE=access.
+      "binding": "OAUTH_KV"
+    }
+  ],
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "lite",
+      "max_instances": 5
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "LANDING_MCP",
+        "class_name": "LandingMcp"
+      },
+      {
+        "name": "DRAFTS",
+        "class_name": "DraftCoordinator"
+      },
+      {
+        "name": "Sandbox",
+        "class_name": "Sandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["LandingMcp", "DraftCoordinator", "Sandbox"]
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "head_sampling_rate": 1
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.1
+    }
+  },
+  "secrets": {
+    "required": [
+      "ACCESS_CLIENT_ID",
+      "ACCESS_CLIENT_SECRET",
+      "ACCESS_TOKEN_URL",
+      "ACCESS_AUTHORIZATION_URL",
+      "ACCESS_JWKS_URL",
+      "COOKIE_ENCRYPTION_KEY"
+    ]
+  }
+}

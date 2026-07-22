@@ -1,0 +1,40 @@
+{
+  "name": "skydeo-landing-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "wrangler dev --var MCP_AUTH_MODE:local --var PREVIEW_HOSTNAME:localhost:8787",
+    "dev:access": "wrangler dev --var MCP_AUTH_MODE:access --host localhost:8787",
+    "cf-typegen": "wrangler types",
+    "cf-typegen:check": "wrangler types --check",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "check": "npm run cf-typegen:check && npm run typecheck && npm run lint && npm test",
+    "deploy": "wrangler deploy --dry-run",
+    "deploy:dry-run": "wrangler deploy --dry-run"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "^0.12.4",
+    "@cloudflare/workers-oauth-provider": "^0.8.2",
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "agents": "^0.17.4",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.1.1",
+    "eslint": "^10.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.65.0",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.59.0"
+  },
+  "overrides": {
+    "sharp": "0.35.0"
+  }
+}
