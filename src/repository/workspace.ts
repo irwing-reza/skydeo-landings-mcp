@@ -3,6 +3,16 @@ import type { ExecResult } from "@cloudflare/sandbox";
 export const REPOSITORY_WORKSPACE_PATH = "/workspace/repository";
 export const REPOSITORY_CHECKOUT_COMMAND =
   "/usr/local/bin/prepare-readonly-repository";
+export const REPOSITORY_INSTALL_COMMAND = "npm ci --no-audit --no-fund";
+export const REPOSITORY_CHECK_COMMAND = "npm run check";
+export const REPOSITORY_BUILD_COMMAND = "npm run build";
+
+const MAX_DIAGNOSTIC_LENGTH = 4_096;
+const VALIDATION_ENVIRONMENT = {
+  CI: "true",
+  NO_COLOR: "1",
+  npm_config_update_notifier: "false",
+} as const;
 
 const COMMIT_SHA_PATTERN = /^[a-f0-9]{40}$/;
 const RELEASE_REF_PATTERN = /^refs\/heads\/[A-Za-z0-9._/-]+$/;
@@ -21,11 +31,35 @@ export interface RepositoryWorkspaceEnvironment {
   REPOSITORY_BASE_SHA: string;
 }
 
-export interface RepositoryCheckoutSandbox {
+export interface RepositoryWorkspaceSandbox {
   exec(command: string, options: {
-    env: Record<string, string>;
+    cwd?: string;
+    env?: Record<string, string>;
     timeout: number;
-  }): Promise<Pick<ExecResult, "success" | "exitCode" | "stdout">>;
+  }): Promise<Pick<ExecResult, "success" | "exitCode" | "stdout" | "stderr">>;
+}
+
+export type RepositoryCheckoutSandbox = RepositoryWorkspaceSandbox;
+
+export type RepositoryValidationStep = "install" | "check" | "build";
+
+export interface RepositoryValidationResult {
+  install: "passed";
+  checks: readonly [typeof REPOSITORY_CHECK_COMMAND, typeof REPOSITORY_BUILD_COMMAND];
+}
+
+export class RepositoryValidationError extends Error {
+  readonly step: RepositoryValidationStep;
+  readonly exitCode: number | null;
+
+  constructor(step: RepositoryValidationStep, exitCode: number | null, diagnostic: string) {
+    const exitSummary = exitCode === null ? "command error" : `exit code ${String(exitCode)}`;
+    const suffix = diagnostic.length === 0 ? "" : `: ${diagnostic}`;
+    super(`Repository ${step} validation failed (${exitSummary})${suffix}`);
+    this.name = "RepositoryValidationError";
+    this.step = step;
+    this.exitCode = exitCode;
+  }
 }
 
 export function repositoryWorkspaceConfig(
@@ -74,7 +108,7 @@ export async function prepareRepositoryCheckout(
     throw new Error("Repository checkout credential is unavailable");
   }
 
-  let result: Pick<ExecResult, "success" | "exitCode" | "stdout">;
+  let result: Pick<ExecResult, "success" | "exitCode" | "stdout" | "stderr">;
   try {
     result = await sandbox.exec(REPOSITORY_CHECKOUT_COMMAND, {
       env: {
@@ -98,4 +132,83 @@ export async function prepareRepositoryCheckout(
   if (result.stdout.trim() !== config.baseSha) {
     throw new Error("Repository checkout did not verify the configured base SHA");
   }
+}
+
+export async function installAndValidateRepository(
+  sandbox: RepositoryWorkspaceSandbox,
+): Promise<RepositoryValidationResult> {
+  await runRepositoryValidationStep(
+    sandbox,
+    "install",
+    REPOSITORY_INSTALL_COMMAND,
+    300_000,
+  );
+  await runRepositoryValidationStep(
+    sandbox,
+    "check",
+    REPOSITORY_CHECK_COMMAND,
+    300_000,
+  );
+  await runRepositoryValidationStep(
+    sandbox,
+    "build",
+    REPOSITORY_BUILD_COMMAND,
+    300_000,
+  );
+
+  return {
+    install: "passed",
+    checks: [REPOSITORY_CHECK_COMMAND, REPOSITORY_BUILD_COMMAND],
+  };
+}
+
+async function runRepositoryValidationStep(
+  sandbox: RepositoryWorkspaceSandbox,
+  step: RepositoryValidationStep,
+  command: string,
+  timeout: number,
+): Promise<void> {
+  let result: Pick<ExecResult, "success" | "exitCode" | "stdout" | "stderr">;
+  try {
+    result = await sandbox.exec(command, {
+      cwd: REPOSITORY_WORKSPACE_PATH,
+      env: VALIDATION_ENVIRONMENT,
+      timeout,
+    });
+  } catch {
+    // Transport errors can serialize invocation or environment details. Keep
+    // the public and durable failure message independent of the thrown value.
+    throw new RepositoryValidationError(step, null, "Sandbox command failed");
+  }
+
+  if (!result.success) {
+    throw new RepositoryValidationError(
+      step,
+      result.exitCode,
+      boundedRedactedDiagnostic(result.stderr, result.stdout),
+    );
+  }
+}
+
+export function boundedRedactedDiagnostic(...outputs: string[]): string {
+  const combined = outputs
+    .filter((output) => output.trim().length > 0)
+    .join("\n")
+    .replace(/https?:\/\/[^\s/@:]+:[^\s/@]+@/gi, "https://[REDACTED]@")
+    .replace(
+      /\b[A-Za-z0-9_]*(?:token|secret|password|authorization)\s*[:=][^\r\n]*/gi,
+      "[REDACTED]",
+    )
+    .replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [REDACTED]")
+    .replace(/\b(?:github_pat_|gh[pousr]_)[A-Za-z0-9_]+\b/g, "[REDACTED]")
+    .replace(
+      /\b[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/g,
+      "[REDACTED]",
+    )
+    .trim();
+
+  if (combined.length <= MAX_DIAGNOSTIC_LENGTH) {
+    return combined;
+  }
+  return `${combined.slice(0, MAX_DIAGNOSTIC_LENGTH)}…[truncated]`;
 }

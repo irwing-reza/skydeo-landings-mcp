@@ -2,7 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   REPOSITORY_CHECKOUT_COMMAND,
+  REPOSITORY_BUILD_COMMAND,
+  REPOSITORY_CHECK_COMMAND,
+  REPOSITORY_INSTALL_COMMAND,
   assertRepositoryPagePath,
+  boundedRedactedDiagnostic,
+  installAndValidateRepository,
   prepareRepositoryCheckout,
   repositoryWorkspaceConfig,
   type RepositoryCheckoutSandbox,
@@ -55,8 +60,13 @@ describe("repository workspace", () => {
     const sandbox: RepositoryCheckoutSandbox = {
       exec(command, options) {
         capturedCommand = command;
-        capturedEnvironment = options.env;
-        return Promise.resolve({ exitCode: 0, stdout: `${BASE_SHA}\n`, success: true });
+        capturedEnvironment = options.env ?? {};
+        return Promise.resolve({
+          exitCode: 0,
+          stderr: "",
+          stdout: `${BASE_SHA}\n`,
+          success: true,
+        });
       },
     };
 
@@ -73,12 +83,14 @@ describe("repository workspace", () => {
 
   it("fails closed when checkout or exact-SHA verification fails", async () => {
     const failedSandbox: RepositoryCheckoutSandbox = {
-      exec: () => Promise.resolve({ exitCode: 128, stdout: "", success: false }),
+      exec: () =>
+        Promise.resolve({ exitCode: 128, stderr: "checkout failed", stdout: "", success: false }),
     };
     const wrongRevisionSandbox: RepositoryCheckoutSandbox = {
       exec: () =>
         Promise.resolve({
           exitCode: 0,
+          stderr: "",
           stdout: "985a83fbffd6f2165a86095f266b5cdaae0ee551\n",
           success: true,
         }),
@@ -109,5 +121,84 @@ describe("repository workspace", () => {
   it("recognizes only persisted repository workspace states", () => {
     expect(isRepositoryWorkspaceStatus("ready")).toBe(true);
     expect(isRepositoryWorkspaceStatus("publishing")).toBe(false);
+  });
+
+  it("installs deterministically and runs the canonical checks in order", async () => {
+    const invocations: Array<{
+      command: string;
+      options: { cwd?: string; env?: Record<string, string>; timeout: number };
+    }> = [];
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command, options) {
+        invocations.push({ command, options });
+        return Promise.resolve({ exitCode: 0, stderr: "", stdout: "ok", success: true });
+      },
+    };
+
+    await expect(installAndValidateRepository(sandbox)).resolves.toEqual({
+      install: "passed",
+      checks: [REPOSITORY_CHECK_COMMAND, REPOSITORY_BUILD_COMMAND],
+    });
+    expect(invocations.map(({ command }) => command)).toEqual([
+      REPOSITORY_INSTALL_COMMAND,
+      REPOSITORY_CHECK_COMMAND,
+      REPOSITORY_BUILD_COMMAND,
+    ]);
+    for (const { options } of invocations) {
+      expect(options.cwd).toBe("/workspace/repository");
+      expect(options.timeout).toBe(300_000);
+      expect(options.env?.CI).toBe("true");
+      expect(options.env).not.toHaveProperty("REPOSITORY_CHECKOUT_TOKEN");
+    }
+  });
+
+  it("stops after the first validation failure with bounded redacted diagnostics", async () => {
+    const commands: string[] = [];
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command) {
+        commands.push(command);
+        if (command === REPOSITORY_CHECK_COMMAND) {
+          return Promise.resolve({
+            exitCode: 2,
+            stderr: `password=hunter2\n${"x".repeat(5_000)}`,
+            stdout: "token: exposed-value",
+            success: false,
+          });
+        }
+        return Promise.resolve({ exitCode: 0, stderr: "", stdout: "ok", success: true });
+      },
+    };
+
+    const failure = installAndValidateRepository(sandbox);
+    await expect(failure).rejects.toMatchObject({ exitCode: 2, step: "check" });
+    await expect(failure).rejects.not.toThrow("hunter2");
+    await expect(failure).rejects.not.toThrow("exposed-value");
+    await expect(failure).rejects.toThrow("[REDACTED]");
+    await expect(failure).rejects.toThrow("[truncated]");
+    expect(commands).toEqual([REPOSITORY_INSTALL_COMMAND, REPOSITORY_CHECK_COMMAND]);
+  });
+
+  it("redacts credential URLs and caps diagnostics", () => {
+    const diagnostic = boundedRedactedDiagnostic(
+      `fetch https://user:credential@example.com/repository\nAuthorization: Bearer abcdef\n` +
+        `github_pat_sensitivevalue\n${"a".repeat(5_000)}`,
+    );
+
+    expect(diagnostic).not.toContain("credential");
+    expect(diagnostic).not.toContain("abcdef");
+    expect(diagnostic).not.toContain("sensitivevalue");
+    expect(diagnostic).toContain("https://[REDACTED]@example.com");
+    expect(diagnostic.length).toBeLessThanOrEqual(4_109);
+  });
+
+  it("does not serialize Sandbox transport failures into validation errors", async () => {
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec: () => Promise.reject(new Error(`transport included ${CHECKOUT_TOKEN}`)),
+    };
+
+    const failure = installAndValidateRepository(sandbox);
+    await expect(failure).rejects.toMatchObject({ exitCode: null, step: "install" });
+    await expect(failure).rejects.toThrow("Sandbox command failed");
+    await expect(failure).rejects.not.toThrow(CHECKOUT_TOKEN);
   });
 });

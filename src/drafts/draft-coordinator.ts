@@ -20,6 +20,7 @@ import { previewSandboxId } from "./preview-sandbox-id";
 import { buildPreviewUrl } from "./preview-url";
 import {
   assertRepositoryPagePath,
+  installAndValidateRepository,
   prepareRepositoryCheckout,
   repositoryWorkspaceConfig,
 } from "../repository/workspace";
@@ -270,6 +271,7 @@ export class DraftCoordinator extends DurableObject<Env> {
         config,
         this.env.REPOSITORY_CHECKOUT_TOKEN,
       );
+      const validation = await installAndValidateRepository(sandbox);
       const preparedAt = Date.now();
       this.ctx.storage.sql.exec(
         `UPDATE draft
@@ -283,6 +285,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       const draft = this.requireDraft();
       await this.ensureCleanupAlarm(draft);
       this.logEvent("repository_workspace_ready", {
+        checks: validation.checks.join(","),
         revision: config.baseSha,
         workspaceId,
       });
