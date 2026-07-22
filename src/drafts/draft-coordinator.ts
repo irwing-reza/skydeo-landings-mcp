@@ -209,7 +209,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       return { allowed: true, state };
     }
 
-    this.logEvent(`preview_${state}`, { revision });
+    this.logEvent("preview_access_denied", { revision, state });
     return { allowed: false, state };
   }
 

@@ -10,6 +10,9 @@ which parts are already present in the repository.
   previews, approval, and production publishing.
 - [Authentication](AUTHENTICATION.md) — Cloudflare Access, OAuth secrets, KV
   storage, local authenticated testing, and production enablement.
+- [Preview lifecycle verification](LIFECYCLE_VERIFICATION.md) — safe local and
+  explicitly authorized production smoke tests for expiry, revocation, alarms,
+  and Sandbox cleanup.
 
 ## Status language
 

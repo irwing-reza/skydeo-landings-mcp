@@ -8,6 +8,8 @@ Skydeo landing pages through Model Context Protocol clients.
 - [`docs/README.md`](docs/README.md) — documentation index
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — layer-by-layer integration,
   trust boundaries, request flow, and implementation status
+- [`docs/LIFECYCLE_VERIFICATION.md`](docs/LIFECYCLE_VERIFICATION.md) — real
+  alarm/container smoke tests and the production verification gate
 
 ## Current milestone
 

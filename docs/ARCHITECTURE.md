@@ -297,6 +297,10 @@ same stable Sandbox ID, skip an already completed cleanup, and reschedule failed
 container destruction after five minutes. Repeated cleanup calls therefore do not
 create duplicate work or recreate a cleaned container.
 
+This is not a fleet-wide reconciliation mechanism. Orphan discovery and sweeping
+for Sandboxes that no longer have reachable draft state remains planned and must
+include a non-destructive inventory/dry-run phase before deletion is enabled.
+
 The production wildcard route, DNS, TLS, and Access application have been verified
 with an authenticated Sandbox preview.
 
