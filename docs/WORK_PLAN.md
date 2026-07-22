@@ -32,8 +32,8 @@ The intended public MCP boundary is:
 | Preview lifecycle | Complete | TTL, revoke, alarms, cleanup, structured events |
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
 | Production lifecycle verification | Pending authorization | Must create and destroy disposable production drafts |
-| Canonical repository integration | Pending | Remote and clean pinned SHA must be confirmed |
-| Unified landing workflow | Planned | `manage_landing` contract not implemented |
+| Canonical repository integration | In progress | Local evidence recorded; remote and clean pinned SHA still require independent confirmation |
+| Unified landing workflow | In progress | Typed `manage_landing` contract and state model implemented; runtime orchestration pending |
 | Repository-backed previews | Planned | Current drafts still accept complete HTML |
 | Structured editing | Planned | Internal operations not implemented |
 | Publish approval and adapter | Planned | No production publishing capability exists |
@@ -59,7 +59,7 @@ before using either value in service configuration.
 - [ ] Confirm the clean initial commit SHA.
 - [ ] Choose read-only checkout credentials for draft workspaces.
 - [ ] Choose narrowly scoped write credentials for publishing.
-- [ ] Confirm `npm run check` and `npm run build` as canonical validation.
+- [x] Confirm `npm run check` and `npm run build` as canonical validation.
 - [ ] Decide whether publishing creates pull requests or controlled direct commits.
 - [ ] Define how the base SHA advances after canonical releases.
 
@@ -70,9 +70,13 @@ Acceptance criteria:
 - Checkout credentials cannot publish.
 - Publishing credentials are unavailable to ordinary preview operations.
 
+Local evidence and unresolved credential/publishing decisions are recorded in
+`docs/REPOSITORY_BOUNDARY.md`. The candidate remote and SHA are deliberately not
+service configuration yet.
+
 ## Milestone 2: Define the unified workflow contract
 
-**Status: Planned**
+**Status: Contract complete; orchestration pending**
 
 Define `manage_landing` around workflow state rather than exposing many editing
 tools. A provisional request shape is:
@@ -101,6 +105,12 @@ Every response should include the resolved page identity, draft ID, immutable
 revision, concise change summary, validation status, available preview URL, and
 the next user action.
 
+The typed wire contract, intent values, workflow states, and guarded state
+transitions live in `src/domain/landing-workflow.ts`. Intent classification is
+implemented independently of internal editing primitives. Registering the MCP
+tool and persisting workflow state belong to the repository-backed workspace
+slice.
+
 Acceptance criteria:
 
 - One natural-language request can start either a new-page or update flow.
@@ -110,7 +120,7 @@ Acceptance criteria:
 
 ## Milestone 3: Resolve intent and page identity
 
-**Status: Planned**
+**Status: Resolver complete; repository integration pending**
 
 Classify requests as:
 
@@ -130,6 +140,12 @@ Resolve existing pages in this order:
 
 If one page matches confidently, continue. If multiple pages match, ask one
 consolidated question. Never silently choose between ambiguous production pages.
+
+Deterministic discovery derives page identities from repository source paths
+and exact registered hostnames. The locally observed candidate snapshot is
+explicitly non-authoritative and cannot be used for checkout. Update requests
+can now resolve, summarize, detect actionable changes, and produce one
+consolidated question without allocating a Sandbox.
 
 Acceptance criteria:
 
@@ -364,4 +380,3 @@ Acceptance criteria:
 4. Add tests for new/update/status/publish intent classification.
 5. Begin the repository-backed workspace slice only after the boundary inputs are
    confirmed.
-
