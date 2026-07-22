@@ -31,37 +31,42 @@ The intended public MCP boundary is:
 | Protected previews | Complete | Access assertion and lifecycle checks before proxying |
 | Preview lifecycle | Complete | TTL, revoke, alarms, cleanup, structured events |
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
-| Production lifecycle verification | Pending authorization | Must create and destroy disposable production drafts |
-| Canonical repository integration | In progress | Local evidence recorded; remote and clean pinned SHA still require independent confirmation |
+| Production lifecycle verification | Conditionally authorized | Run one disposable test only after repository-backed cleanup and preflight checks are complete |
+| Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
 | Unified landing workflow | In progress | `manage_landing` now provides deterministic initial discovery and persisted legacy-draft status; repository-backed mutation remains pending |
 | Repository-backed previews | Planned | Current drafts still accept complete HTML |
 | Structured editing | Planned | Internal operations not implemented |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
 
-## Known repository candidates
+## Confirmed temporary repository boundary
 
-The inspected `skydeo-landings` checkout contains these remotes:
+The temporary canonical boundary selected on July 22, 2026 is:
 
-- likely canonical: `git@github.com:skydeo-aviato/skydeo-landings.git`
-- personal fork: `git@github.com:irwing-reza/skydeo-landings.git`
+- remote: `git@github.com:irwing-reza/skydeo-landings.git`;
+- release ref: `refs/heads/master`;
+- publishing identity: a separate narrowly scoped GitHub App; and
+- publishing method: pull requests only.
 
-The inspected checkout was at
-`985a83fbffd6f2165a86095f266b5cdaae0ee551`, but it also contained a local
-`wrangler.jsonc` modification. Confirm the canonical remote and clean base SHA
-before using either value in service configuration.
+An authorized read-only fetch found `master` at
+`010829fa4235fb312e6706d0c8a050c2f8084499`. The earlier candidate
+`985a83fbffd6f2165a86095f266b5cdaae0ee551` is its direct parent and is reachable
+from `master`. The current commit
+`010829fa4235fb312e6706d0c8a050c2f8084499` is the selected initial pinned base.
+Detached checkouts will use a fine-grained token restricted to this repository
+with Contents read-only and no write permissions.
 
 ## Milestone 1: Confirm the repository boundary
 
-**Status: In progress**
+**Status: Boundary decisions complete; provisioning belongs to implementation**
 
-- [ ] Confirm the canonical remote URL.
-- [ ] Confirm the clean initial commit SHA.
-- [ ] Choose read-only checkout credentials for draft workspaces.
-- [ ] Choose narrowly scoped write credentials for publishing.
+- [x] Confirm the temporary canonical remote URL.
+- [x] Confirm `010829fa4235fb312e6706d0c8a050c2f8084499` as the clean initial commit SHA.
+- [x] Choose a repository-scoped fine-grained token with Contents read-only for draft workspaces.
+- [x] Choose a separate narrowly scoped GitHub App for publishing.
 - [x] Confirm `npm run check` and `npm run build` as canonical validation.
-- [ ] Decide whether publishing creates pull requests or controlled direct commits.
-- [ ] Define how the base SHA advances after canonical releases.
+- [x] Decide that publishing creates pull requests only.
+- [x] Require explicit operator approval to advance the base SHA after verifying reachability and validation.
 
 Acceptance criteria:
 
@@ -70,9 +75,9 @@ Acceptance criteria:
 - Checkout credentials cannot publish.
 - Publishing credentials are unavailable to ordinary preview operations.
 
-Local evidence and unresolved credential/publishing decisions are recorded in
-`docs/REPOSITORY_BOUNDARY.md`. The candidate remote and SHA are deliberately not
-service configuration yet.
+Remote evidence and the confirmed boundary decisions are recorded in
+`docs/REPOSITORY_BOUNDARY.md`. Credential provisioning remains an implementation
+step and must preserve the separation described above.
 
 ## Milestone 2: Define the unified workflow contract
 
@@ -384,10 +389,11 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Confirm the canonical remote and clean base SHA.
-2. Choose read-only checkout and narrowly scoped publishing credentials.
-3. Decide whether publishing creates pull requests or controlled direct commits.
-4. Begin exact-SHA repository workspace persistence only after those boundary
-   inputs are confirmed.
-5. Keep `manage_landing` create, edit, and publish-request branches fail closed
+1. Design secret provisioning so draft workspaces receive only the repository-
+   scoped read-only checkout token and never the publishing identity.
+2. Begin exact-SHA repository workspace persistence at
+   `010829fa4235fb312e6706d0c8a050c2f8084499` in detached mode.
+3. Implement repository-backed cleanup before exercising the conditional
+   production lifecycle authorization.
+4. Keep `manage_landing` create, edit, and publish-request branches fail closed
    until the corresponding durable workflow operations exist.
