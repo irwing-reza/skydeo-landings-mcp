@@ -1,5 +1,5 @@
-import { Buffer } from "node:buffer";
 import type { AuthRequest, OAuthHelpers } from "@cloudflare/workers-oauth-provider";
+import { verifyAccessJwt } from "./access-jwt";
 import { isLandingScope } from "./scopes";
 import type { AuthContext } from "../mcp/landing-mcp";
 import {
@@ -157,7 +157,13 @@ export async function handleAccessRequest(
 			return errResponse;
 		}
 
-		const idTokenClaims = await verifyToken(env, idToken);
+		const idTokenClaims = await verifyAccessJwt(idToken, {
+			audience: env.ACCESS_CLIENT_ID,
+			jwksUrl: env.ACCESS_JWKS_URL,
+		});
+		if (idTokenClaims.email === undefined) {
+			return new Response("Access identity is missing a verified email", { status: 403 });
+		}
 		const user = {
 			email: idTokenClaims.email,
 			// `name` belongs to the OIDC profile scope, but Cloudflare can omit it
@@ -212,120 +218,6 @@ function redirectToAccess(
 	return new Response(null, { headers, status: 302 });
 }
 
-/**
- * Helper to get the Access public keys from the certs endpoint
- */
-async function fetchAccessPublicKey(env: Env, kid: string): Promise<CryptoKey> {
-	if (!env.ACCESS_JWKS_URL) {
-		throw new Error("access jwks url not provided");
-	}
-	// TODO: cache this
-	const response = await fetch(env.ACCESS_JWKS_URL);
-	if (!response.ok) {
-		throw new Error("failed to fetch Access signing keys");
-	}
-	const keys: unknown = await response.json();
-	if (!isJwks(keys)) {
-		throw new Error("Access returned an invalid signing key set");
-	}
-	const jwk = keys.keys.find((key) => key.kid === kid);
-	if (jwk === undefined) {
-		throw new Error("Access signing key was not found");
-	}
-	const key = await crypto.subtle.importKey(
-		"jwk",
-		jwk,
-		{
-			hash: "SHA-256",
-			name: "RSASSA-PKCS1-v1_5",
-		},
-		false,
-		["verify"],
-	);
-	return key;
-}
-
-/**
- * Parse a JWT into its respective pieces. Does not do any validation other than form checking.
- */
-interface ParsedJwt {
-	data: string;
-	header: Record<string, unknown>;
-	payload: Record<string, unknown>;
-	signature: string;
-}
-
-interface AccessClaims {
-	sub: string;
-	name?: string;
-	email: string;
-	exp: number;
-	aud: string | string[];
-}
-
-function parseJWT(token: string): ParsedJwt {
-	const tokenParts = token.split(".");
-
-	if (tokenParts.length !== 3) {
-		throw new Error("token must have 3 parts");
-	}
-	const [headerPart, payloadPart, signature] = tokenParts;
-	if (headerPart === undefined || payloadPart === undefined || signature === undefined) {
-		throw new Error("token must have 3 parts");
-	}
-
-	const header: unknown = JSON.parse(Buffer.from(headerPart, "base64url").toString());
-	const payload: unknown = JSON.parse(Buffer.from(payloadPart, "base64url").toString());
-	if (!isRecord(header) || !isRecord(payload)) {
-		throw new Error("token contains invalid JSON objects");
-	}
-
-	return {
-		data: `${headerPart}.${payloadPart}`,
-		header,
-		payload,
-		signature,
-	};
-}
-
-/**
- * Validates the provided token using the Access public key set
- */
-async function verifyToken(env: Env, token: string): Promise<AccessClaims> {
-	const jwt = parseJWT(token);
-	if (typeof jwt.header.kid !== "string" || jwt.header.alg !== "RS256") {
-		throw new Error("token has an unsupported signing header");
-	}
-	const key = await fetchAccessPublicKey(env, jwt.header.kid);
-
-	const verified = await crypto.subtle.verify(
-		"RSASSA-PKCS1-v1_5",
-		key,
-		Buffer.from(jwt.signature, "base64url"),
-		Buffer.from(jwt.data),
-	);
-
-	if (!verified) {
-		throw new Error("failed to verify token");
-	}
-
-	const claims = jwt.payload;
-	if (!isAccessClaims(claims)) {
-		throw new Error("token is missing required identity claims");
-	}
-	const now = Math.floor(Date.now() / 1000);
-	// Validate expiration
-	if (claims.exp < now) {
-		throw new Error("expired token");
-	}
-	const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-	if (!audiences.includes(env.ACCESS_CLIENT_ID)) {
-		throw new Error("token audience does not match the Access application");
-	}
-
-	return claims;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null;
 }
@@ -349,24 +241,5 @@ function isAuthRequest(value: unknown): value is AuthRequest {
 			typeof value.resource === "string" ||
 			(Array.isArray(value.resource) &&
 				value.resource.every((resource) => typeof resource === "string")))
-	);
-}
-
-function isJwks(value: unknown): value is { keys: Array<JsonWebKey & { kid: string }> } {
-	return (
-		isRecord(value) &&
-		Array.isArray(value.keys) &&
-		value.keys.every((key) => isRecord(key) && typeof key.kid === "string")
-	);
-}
-
-function isAccessClaims(value: Record<string, unknown>): value is Record<string, unknown> & AccessClaims {
-	return (
-		typeof value.sub === "string" &&
-		(value.name === undefined || typeof value.name === "string") &&
-		typeof value.email === "string" &&
-		typeof value.exp === "number" &&
-		(typeof value.aud === "string" ||
-			(Array.isArray(value.aud) && value.aud.every((audience) => typeof audience === "string")))
 	);
 }

@@ -25,6 +25,25 @@ export interface LocalPreviewRoute {
   token: string;
 }
 
+export function isProductionPreviewHostname(hostname: string, previewHostname: string): boolean {
+  const normalizedHostname = hostname.toLowerCase().replace(/\.$/, "");
+  const normalizedPreviewHostname = previewHostname
+    .split(":")[0]
+    ?.toLowerCase()
+    .replace(/\.$/, "");
+  if (!normalizedPreviewHostname || isLocalPreviewHostname(normalizedPreviewHostname)) {
+    return false;
+  }
+
+  const suffix = `.${normalizedPreviewHostname}`;
+  if (!normalizedHostname.endsWith(suffix)) {
+    return false;
+  }
+
+  const label = normalizedHostname.slice(0, -suffix.length);
+  return label.length > 0 && !label.includes(".");
+}
+
 export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
   if (!url.pathname.startsWith(LOCAL_PREVIEW_PATH)) {
     return null;

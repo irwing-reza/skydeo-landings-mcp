@@ -1,8 +1,9 @@
 import OAuthProvider from "@cloudflare/workers-oauth-provider";
 import { getSandbox, proxyToSandbox } from "@cloudflare/sandbox";
 import { handleAccessRequest } from "./auth/access-handler";
+import { requirePreviewAccess, stripPreviewCredentials } from "./auth/preview-access";
 import { LANDING_SCOPES } from "./auth/scopes";
-import { parseLocalPreviewRoute } from "./drafts/preview-url";
+import { isProductionPreviewHostname, parseLocalPreviewRoute } from "./drafts/preview-url";
 import { LandingMcp } from "./mcp/landing-mcp";
 
 export { Sandbox } from "@cloudflare/sandbox";
@@ -37,9 +38,24 @@ export default {
       return proxyLocalPreview(request, env, localPreviewRoute);
     }
 
-    const sandboxPreview = await proxyToSandbox(request, env);
-    if (sandboxPreview !== null) {
-      return sandboxPreview;
+    if (isProductionPreviewHostname(url.hostname, env.PREVIEW_HOSTNAME)) {
+      if (authMode !== "access") {
+        return Response.json(
+          {
+            error: "preview_auth_not_configured",
+            message: "Preview delivery remains closed until production authentication is enabled.",
+          },
+          { headers: { "cache-control": "no-store" }, status: 503 },
+        );
+      }
+
+      const accessFailure = await requirePreviewAccess(request, env);
+      if (accessFailure !== null) {
+        return accessFailure;
+      }
+
+      const sandboxPreview = await proxyToSandbox(stripPreviewCredentials(request), env);
+      return sandboxPreview ?? new Response("Preview not found", { status: 404 });
     }
 
     if (request.method === "GET" && url.pathname === "/healthz") {

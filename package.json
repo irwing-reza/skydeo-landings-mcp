@@ -15,7 +15,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "check": "npm run cf-typegen:check && npm run typecheck && npm run lint && npm test",
-    "deploy": "wrangler deploy --dry-run",
+    "deploy": "wrangler deploy",
     "deploy:dry-run": "wrangler deploy --dry-run"
   },
   "dependencies": {

@@ -11,7 +11,7 @@ Skydeo landing pages through Model Context Protocol clients.
 
 ## Current milestone
 
-This repository currently provides a deploy-closed draft and preview workflow:
+This repository currently provides a production-authenticated draft and preview workflow:
 
 - Streamable HTTP MCP transport through Cloudflare Agents SDK
 - a Cloudflare Access OAuth integration for Skydeo team identity
@@ -19,13 +19,14 @@ This repository currently provides a deploy-closed draft and preview workflow:
 - a typed landing-draft state machine
 - one SQLite-backed Durable Object per draft
 - one isolated Sandbox preview runtime per draft
-- immutable SHA-256 revisions with revision-bound, tokenized preview URLs
+- immutable SHA-256 revisions with revision-bound preview URLs
+- a fail-closed preview proxy that verifies Cloudflare Access assertions before
+  forwarding production preview traffic to a Sandbox
 - no production publishing capability or credentials
 
-The `/mcp` route is disabled by default. `npm run dev` explicitly enables a local-only
-mode, while `npm run dev:access` exercises the complete Access OAuth flow after local
-secrets are configured. A deployment made from this scaffold will return `503` from
-the OAuth and MCP routes instead of exposing an unauthenticated service.
+The deployed `/mcp` route uses Cloudflare Access-backed OAuth. `npm run dev`
+explicitly enables a local-only mode, while `npm run dev:access` exercises the
+complete Access OAuth flow after local secrets are configured.
 
 ## Local checks
 
@@ -54,17 +55,17 @@ draft/create/update workflow; it contains no publish tool.
 `update_draft` replaces the HTML and requires the current revision as
 `expected_revision`, preventing one editor from silently overwriting another.
 Every successful create or update returns a preview URL for that immutable HTML
-revision. Preview URLs are capability URLs containing an unguessable Sandbox token;
-anyone who receives one can view that revision, so they must not be posted publicly.
+revision. Local preview URLs remain development-only capability URLs. Production
+preview hostnames are routed through the Worker and require a valid assertion from
+the wildcard Cloudflare Access preview application before Sandbox proxying.
 
 ## Planned capability sequence
 
-1. Provision the Access application and OAuth KV namespace, then enable Access mode.
+1. Add preview expiration, revocation, and abandoned-container cleanup.
 2. Create isolated repository workspaces from a pinned `skydeo-landings` revision
    instead of accepting complete HTML.
-3. Put preview access behind application-level authentication.
-4. Add validation and structured landing-page edit operations.
-5. Add a durable, explicitly approved publish workflow with production safeguards.
+3. Add validation and structured landing-page edit operations.
+4. Add a durable, explicitly approved publish workflow with production safeguards.
 
 The MCP session is not the source of truth for a draft. Each draft is addressed by a
 stable Skydeo-scoped ID and stored in its own Durable Object so work survives client

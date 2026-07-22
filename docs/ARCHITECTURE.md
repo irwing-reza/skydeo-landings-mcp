@@ -79,8 +79,7 @@ Inspector testing. It must be removed when the OAuth provider owns `/mcp`.
 
 ## Layer 3: Authentication and authorization
 
-**Status: Source integration implemented; production remains disabled until the
-Access application, KV namespace, and Worker secrets are configured.**
+**Status: Implemented and verified in production.**
 
 The integration wraps the MCP handler with Cloudflare's Workers OAuth
 Provider. The provider is responsible for MCP OAuth endpoints, client
@@ -136,6 +135,9 @@ The required Cloudflare-side setup is intentionally separate from source control
    hostname;
 4. create the OAuth KV namespace used for short-lived state and provider data;
 5. store the Access client secret and cookie-encryption key as Worker secrets.
+6. create a self-hosted Access application for `*.landing-mcp.skydeo.com` using the
+   same team membership policy;
+7. store that application's audience as `PREVIEW_ACCESS_AUD`.
 
 The source integration uses `ACCESS_CLIENT_ID`, `ACCESS_CLIENT_SECRET`,
 `ACCESS_AUTHORIZATION_URL`, `ACCESS_TOKEN_URL`, `ACCESS_JWKS_URL`, and
@@ -250,13 +252,16 @@ does not need a local clone or direct repository access.
 
 ## Layer 8: Preview delivery
 
-**Status: Implemented with tokenized capability URLs; authenticated previews remain planned.**
+**Status: Implemented and verified in production.**
 
-Sandbox preview URLs include an unguessable access token but are otherwise public
-to anyone who has the URL. The current slice returns these capability URLs so the
-draft loop works end to end without production access. Before broader production
-use, previews should be routed through an authenticated gateway or protected named
-tunnel.
+Production Sandbox preview URLs route through the Worker. A separate self-hosted
+Cloudflare Access application protects the one-level wildcard preview hostname and
+injects an Access assertion. The Worker validates its signature, lifetime, and
+preview-application audience before forwarding the request to `proxyToSandbox()`.
+This defense-in-depth check makes preview delivery fail closed if the Access route
+or application is misconfigured. The Worker removes the Access assertion, cookies,
+authorization header, and Access service-token headers before the request enters
+the Sandbox. Local development keeps its explicit local-only preview path.
 
 The current preview layer:
 
@@ -264,13 +269,13 @@ The current preview layer:
 - avoid leaking repository credentials or build logs;
 - use a stable URL while the corresponding revision remains active;
 - preserve older immutable revision URLs after a newer build succeeds.
+- require an authenticated Skydeo Access identity in production.
 
-Application-level authentication, expiration, revocation, and cleanup of abandoned
-preview processes remain required before this capability is considered production-safe.
+Expiration, revocation, and cleanup of abandoned preview processes remain required
+before this capability is considered fully production-safe.
 
-Production Sandbox preview URLs also require appropriate custom-domain or tunnel
-configuration. A successful local preview does not by itself prove that production
-preview routing is configured.
+The production wildcard route, DNS, TLS, and Access application have been verified
+with an authenticated Sandbox preview.
 
 ## Layer 9: Approval boundary
 
@@ -330,6 +335,7 @@ canonical repository pipeline already owns deployment.
 | `DRAFTS` | `DraftCoordinator` | Strongly consistent state for one draft |
 | `Sandbox` | Cloudflare Sandbox SDK | Isolated Git, build, and preview runtime |
 | `OAUTH_KV` | Workers OAuth Provider | OAuth clients, grants, tokens, and short-lived upstream state |
+| `PREVIEW_ACCESS_AUD` | Preview Access verifier | Binds preview assertions to the wildcard self-hosted Access application |
 | `MCP_AUTH_MODE` | Worker entrypoint | Temporary local-only gate; not real auth |
 | `observability` | Workers platform | Logs and traces for the control plane |
 
@@ -355,14 +361,14 @@ sufficient for most investigations.
 
 | Layer | Current state | Next integration |
 | --- | --- | --- |
-| MCP transport | `McpAgent.serve()` wired locally | Wrap with OAuth provider |
-| Authentication | Access OAuth source wired; deploy-closed gate active | Create Access app, KV, and secrets |
-| Authorization | Read/write scopes enforced per tool; local mode uses a development identity | Add authenticated preview access |
+| MCP transport | `McpAgent.serve()` wrapped by the OAuth provider in production | Maintain protocol compatibility |
+| Authentication | Access OAuth source and verification live in production | Maintain configuration and rotate secrets |
+| Authorization | Read/write scopes and authenticated production previews enforced | Add publish scope enforcement with approval |
 | MCP tools | Status plus create/get/update draft | Add structured repository edits |
 | Domain model | Draft state machine | Add revision and approval invariants |
 | Draft storage | SQLite Durable Object connected through typed RPC | Add approval records |
 | Sandbox | Direct-HTML immutable previews | Clone, build, validate, and start Astro |
-| Preview | Revision-bound capability URL | Add authenticated proxy/tunnel routing |
+| Preview | Revision-bound URL with fail-closed Access verification | Add expiration, revocation, and cleanup |
 | Approval | Not implemented | Add expiring revision-bound approval records |
 | Publishing | Not implemented | Add async repository/pipeline adapter |
 | Observability | Workers logs/traces enabled | Add structured application audit events |

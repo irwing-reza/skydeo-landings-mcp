@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import { buildPreviewUrl, parseLocalPreviewRoute } from "../src/drafts/preview-url";
+import {
+  buildPreviewUrl,
+  isProductionPreviewHostname,
+  parseLocalPreviewRoute,
+} from "../src/drafts/preview-url";
 
 const REVISION = "5e8e4ef57cf5e73055be304f6eef4a403d242eb56ee88c7cdccd177d1051b48a";
 const EXPOSED_HOST_LABEL =
@@ -48,5 +52,23 @@ describe("preview URLs", () => {
     expect(buildPreviewUrl(exposed, REVISION, "landing-mcp.skydeo.com")).toBe(
       `${exposed}${REVISION}`,
     );
+  });
+
+  it("recognizes only one-level production Sandbox preview hostnames", () => {
+    expect(
+      isProductionPreviewHostname(
+        `${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com`,
+        "landing-mcp.skydeo.com",
+      ),
+    ).toBe(true);
+    expect(isProductionPreviewHostname("landing-mcp.skydeo.com", "landing-mcp.skydeo.com")).toBe(
+      false,
+    );
+    expect(
+      isProductionPreviewHostname("nested.bad.landing-mcp.skydeo.com", "landing-mcp.skydeo.com"),
+    ).toBe(false);
+    expect(
+      isProductionPreviewHostname("preview.attacker.example", "landing-mcp.skydeo.com"),
+    ).toBe(false);
   });
 });
