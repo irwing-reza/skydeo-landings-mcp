@@ -33,9 +33,9 @@ The intended public MCP boundary is:
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
 | Production lifecycle verification | Conditionally authorized | Run one disposable test only after repository-backed cleanup and preflight checks are complete |
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
-| Unified landing workflow | In progress | `manage_landing` now provides deterministic initial discovery and persisted legacy-draft status; repository-backed mutation remains pending |
-| Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, and cleanup are implemented internally; repository editing and Astro previews are not connected |
-| Structured editing | Planned | Internal operations not implemented |
+| Unified landing workflow | In progress | `manage_landing` now connects one bounded existing-page headline update and later headline revisions to repository-backed drafts; create, other edit types, and publish remain closed |
+| Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, Astro rendering, and cleanup are connected for headline updates |
+| Structured editing | In progress | `replace_headline` is implemented with a single-page source boundary; copy, CTA, SEO, image, and layout operations remain planned |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
 
@@ -167,15 +167,15 @@ Acceptance criteria:
 
 ## Milestone 4: Create repository-backed draft workspaces
 
-**Status: Validated exact-SHA workspace foundation implemented; editing integration pending**
+**Status: Connected for bounded existing-page headline updates**
 
 - [x] Create one stable Sandbox per draft.
 - [x] Clone or fetch the configured canonical repository.
 - [x] Check out the exact pinned base SHA in detached mode.
 - [x] Persist remote, base SHA, page path, hostname, actor, and workspace ID.
 - [x] Install dependencies deterministically.
-- [ ] Reuse the workspace for later revisions of the same draft.
-- [ ] Represent revisions using repository tree state rather than arbitrary HTML.
+- [x] Reuse the workspace for later revisions of the same draft.
+- [x] Represent revisions using repository tree state rather than arbitrary HTML.
 - [x] Connect workspace destruction to the existing preview lifecycle.
 
 The internal repository-draft entrypoint reads the canonical boundary only from
@@ -190,10 +190,16 @@ sequentially in the detached checkout. Each command has a fixed timeout and a
 minimal non-secret environment. Failed command output is redacted and bounded
 before it can reach durable events or callers, and every checkout, install, or
 validation failure enters the same immediate destruction and alarm-retry path.
-Public repository mutation remains fail closed until editing and Astro preview
-rendering are connected. The checkout helper safely verifies the existing
-detached workspace when invoked again, but revision reuse is not marked complete
-until the edit loop calls it.
+`manage_landing` now exposes the repository workspace only for a resolved,
+unambiguous `replace_headline` operation. The fixed edit command accepts the page
+path and headline through an invocation-scoped environment, rejects dynamic or
+multi-region `h1` markup, and verifies that only the resolved Astro source file
+changed. Git's native tree object ID is persisted, while the public 64-character
+revision is a deterministic SHA-256 digest of the base commit and tree ID. Later
+headline revisions verify both the expected public revision and the persisted
+tree before reusing the same workspace. Failed revisions restore the last valid
+tree; if restoration cannot be verified, the workspace is retired through the
+same destruction and alarm-retry path.
 
 Acceptance criteria:
 
@@ -228,7 +234,7 @@ Acceptance criteria:
 
 ## Milestone 6: Implement the existing-page update branch
 
-**Status: Planned**
+**Status: First operation implemented**
 
 For a vague request such as “I want to update the TacoGraph page”:
 
@@ -249,11 +255,11 @@ Acceptance criteria:
 
 ## Milestone 7: Add internal structured editing operations
 
-**Status: Planned**
+**Status: In progress; first operation implemented**
 
 Initial internal operations:
 
-- `replace_headline`
+- [x] `replace_headline`
 - `update_copy`
 - `update_cta`
 - `update_seo_metadata`
@@ -406,9 +412,9 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Connect one actionable existing-page update to repository-backed draft
-   creation and Astro preview rendering.
-2. Add explicit repository-workspace preflight checks, then exercise the
-   conditionally authorized disposable production lifecycle test.
-3. Keep `manage_landing` create, edit, and publish-request branches fail closed
-   until the corresponding durable workflow operations exist.
+1. Exercise the conditionally authorized disposable production lifecycle test
+   only after its new read-only repository-workspace preflight passes.
+2. Add the next bounded existing-page operation, preserving tree verification
+   and rollback behavior.
+3. Keep `manage_landing` create, unsupported edit, and publish-request branches
+   fail closed until their corresponding durable workflow operations exist.

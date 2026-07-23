@@ -10,9 +10,14 @@ import {
 import {
   inspectLandingDraft,
   planInitialLandingRequest,
+  repositoryMutationResult,
   unavailableDraftOperation,
 } from "../domain/manage-landing";
-import { classifyLandingIntent } from "../domain/landing-intent";
+import {
+  classifyLandingIntent,
+  parseReplaceHeadlineChange,
+} from "../domain/landing-intent";
+import { resolvePageUpdateRequest } from "../domain/page-request";
 import type { ManageLandingRequest, ManageLandingResult } from "../domain/landing-workflow";
 import { previewLifecycleState } from "../domain/preview-lifecycle";
 import { draftObjectName } from "../drafts/draft-object-name";
@@ -41,7 +46,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
       "manage_landing",
       {
         description:
-          "Resolve and inspect the unified Skydeo landing-page workflow. Initial discovery and status reads are available; repository-backed edits fail closed until the canonical repository boundary is configured. This tool never confirms or completes publishing.",
+          "Resolve and inspect the unified Skydeo landing-page workflow. Existing-page headline replacements create validated repository-backed Astro previews; unsupported edit, create, and publish branches fail closed. This tool never confirms or completes publishing.",
         inputSchema: {
           request: z.string().trim().min(1).max(10_000),
           draft_id: z.uuid().optional(),
@@ -61,6 +66,32 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
 
         try {
           if (input.draft_id === undefined) {
+            if (intent === "update_page") {
+              const update = resolvePageUpdateRequest(
+                request.request,
+                LOCAL_CANDIDATE_LANDING_SNAPSHOT,
+              );
+              const change = parseReplaceHeadlineChange(request.request);
+              if (
+                update.resolution.status === "resolved" &&
+                update.actionable &&
+                change !== null
+              ) {
+                const id = crypto.randomUUID();
+                const mutation = await this.env.DRAFTS.getByName(
+                  draftObjectName(auth.organizationId, id),
+                ).createRepositoryDraft({
+                  createdBy: auth.claims.sub,
+                  headline: change.headline,
+                  hostname: update.resolution.page.hostname,
+                  id,
+                  organizationId: auth.organizationId,
+                  pagePath: update.resolution.page.source_path,
+                  previewHostname: this.env.PREVIEW_HOSTNAME,
+                });
+                return workflowResult(repositoryMutationResult(intent, mutation));
+              }
+            }
             return workflowResult(
               planInitialLandingRequest(request, LOCAL_CANDIDATE_LANDING_SNAPSHOT),
             );
@@ -71,6 +102,40 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
           ).get(auth.organizationId);
           if (intent === "inspect_status") {
             return workflowResult(inspectLandingDraft(draft));
+          }
+          if (intent === "request_publish") {
+            return workflowResult(unavailableDraftOperation(request, draft));
+          }
+          if (draft.repositoryWorkspaceStatus === "ready") {
+            if (input.expected_revision === undefined) {
+              throw new Error(
+                "expected_revision is required to update a repository-backed draft",
+              );
+            }
+            const change = parseReplaceHeadlineChange(request.request);
+            if (change === null) {
+              return workflowResult({
+                state: "awaiting_details",
+                intent,
+                page: inspectLandingDraft(draft).page,
+                draft_id: draft.id,
+                revision: draft.currentRevision,
+                change_summary: "No repository change was applied.",
+                validation: { status: "not_run", checks: [], summary: null },
+                preview_url: inspectLandingDraft(draft).preview_url,
+                next_action:
+                  "Specify one headline replacement as ‘change the headline to …’. Other repository edit operations remain unavailable.",
+              });
+            }
+            const mutation = await this.env.DRAFTS.getByName(
+              draftObjectName(auth.organizationId, input.draft_id),
+            ).updateRepositoryDraft({
+              expectedRevision: input.expected_revision,
+              headline: change.headline,
+              organizationId: auth.organizationId,
+              previewHostname: this.env.PREVIEW_HOSTNAME,
+            });
+            return workflowResult(repositoryMutationResult(intent, mutation));
           }
           if (
             input.expected_revision !== undefined &&
@@ -116,34 +181,31 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
         description:
           "Report which Skydeo landing workflow capabilities are currently available. This tool never changes a draft or production.",
       },
-      () =>
-        Promise.resolve({
+      () => {
+        const status = {
+          service: "skydeo-landing-mcp",
+          phase: "repository-preview-loop",
+          capabilities: {
+            status: true,
+            manageLanding: true,
+            repositoryBackedEditing: true,
+            repositoryWorkspaceCleanup: true,
+            confirmPublish: false,
+            createDraft: true,
+            getDraft: true,
+            updateDraft: true,
+            preview: true,
+            revokePreview: true,
+            publish: false,
+          },
+        };
+        return Promise.resolve({
           content: [
-            {
-              type: "text" as const,
-              text: JSON.stringify(
-                {
-                  service: "skydeo-landing-mcp",
-                  phase: "draft-preview-loop",
-                  capabilities: {
-                    status: true,
-                    manageLanding: true,
-                    repositoryBackedEditing: false,
-                    confirmPublish: false,
-                    createDraft: true,
-                    getDraft: true,
-                    updateDraft: true,
-                    preview: true,
-                    revokePreview: true,
-                    publish: false,
-                  },
-                },
-                null,
-                2,
-              ),
-            },
+            { type: "text" as const, text: JSON.stringify(status, null, 2) },
           ],
-        }),
+          structuredContent: status,
+        });
+      },
     );
 
     this.server.registerTool(

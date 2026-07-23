@@ -37,4 +37,25 @@ describe("preview lifecycle authorization", () => {
     );
     expect(response?.status).toBe(404);
   });
+
+  it("hides an active preview when its immutable revision does not match", async () => {
+    const response = await requireActivePreviewRoute("skydeo", ROUTE, () =>
+      Promise.resolve({ allowed: false, state: "active" }),
+    );
+    expect(response?.status).toBe(404);
+  });
+
+  it("allows active Astro asset requests without a revision query", async () => {
+    let observedRevision: string | null | undefined;
+    const response = await requireActivePreviewRoute(
+      "skydeo",
+      { ...ROUTE, revision: null },
+      (_draftId, revision) => {
+        observedRevision = revision;
+        return Promise.resolve({ allowed: true, state: "active" });
+      },
+    );
+    expect(response).toBeNull();
+    expect(observedRevision).toBeNull();
+  });
 });

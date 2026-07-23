@@ -67,6 +67,12 @@ a short-lived MCP OAuth access token with `landings:read` and `landings:write`, 
 a Cloudflare Access service token allowed by the preview application. Keep all
 values out of shell history and source control.
 
+Before creating any remote disposable draft, the script calls the read-only
+`get_service_status` tool and refuses to continue unless repository-backed
+editing and repository-workspace cleanup are both explicitly ready while
+publishing remains disabled. A failed or missing preflight is terminal and must
+not be bypassed by running individual smoke steps manually.
+
 ```sh
 export ALLOW_REMOTE_LIFECYCLE_SMOKE=1
 export LIFECYCLE_SMOKE_BEARER_TOKEN='<short-lived MCP OAuth token>'
@@ -97,12 +103,14 @@ events before it may destroy anything.
 
 ## Canonical repository integration gate
 
-Repository-backed drafts remain blocked on two immutable inputs:
+Repository-backed headline drafts use the confirmed immutable inputs:
 
 - the canonical remote URL for `skydeo-landings`; and
 - the exact initial commit SHA to pin for workspace creation.
 
-After those are confirmed, implement repository checkout and validation before
-adding structured operations in this order: headline, body copy, CTA, SEO
-metadata, and image replacement. Do not accept a floating branch as the draft base
-and do not add publish credentials as part of that slice.
+The headline operation now checks out and validates the exact base, edits only
+the resolved Astro page, persists a tree-derived revision, renders an Astro
+preview, and reuses the verified workspace for later headline revisions. Add
+remaining operations in this order: body copy, CTA, SEO metadata, and image
+replacement. Do not accept a floating branch as the draft base and do not add
+publish credentials as part of those slices.

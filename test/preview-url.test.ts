@@ -19,12 +19,12 @@ describe("preview URLs", () => {
         REVISION,
         "localhost:8787",
       ),
-    ).toBe(`http://localhost:8787/__preview/${EXPOSED_HOST_LABEL}/${REVISION}`);
+    ).toBe(`http://localhost:8787/__preview/${EXPOSED_HOST_LABEL}/?revision=${REVISION}`);
   });
 
   it("parses a local path for direct Sandbox proxying", () => {
     const localUrl = new URL(
-      `http://localhost:8787/__preview/${EXPOSED_HOST_LABEL}/${REVISION}`,
+      `http://localhost:8787/__preview/${EXPOSED_HOST_LABEL}/?revision=${REVISION}`,
     );
 
     expect(parseLocalPreviewRoute(localUrl)).toEqual({
@@ -37,7 +37,7 @@ describe("preview URLs", () => {
 
   it("parses the preview path after Wrangler rewrites the request host", () => {
     const rewrittenUrl = new URL(
-      `https://landing-mcp.skydeo.com/__preview/${EXPOSED_HOST_LABEL}/${REVISION}`,
+      `https://landing-mcp.skydeo.com/__preview/${EXPOSED_HOST_LABEL}/?revision=${REVISION}`,
     );
 
     expect(parseLocalPreviewRoute(rewrittenUrl)).toEqual({
@@ -51,7 +51,7 @@ describe("preview URLs", () => {
   it("keeps production preview URLs in their native Sandbox format", () => {
     const exposed = `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/`;
     expect(buildPreviewUrl(exposed, REVISION, "landing-mcp.skydeo.com")).toBe(
-      `${exposed}${REVISION}`,
+      `${exposed}?revision=${REVISION}`,
     );
   });
 
@@ -77,7 +77,7 @@ describe("preview URLs", () => {
     expect(
       parseProductionPreviewRoute(
         new URL(
-          `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/${REVISION}`,
+          `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/?revision=${REVISION}`,
         ),
         "landing-mcp.skydeo.com",
       ),
@@ -87,11 +87,22 @@ describe("preview URLs", () => {
     });
   });
 
-  it("rejects malformed production preview paths", () => {
+  it("accepts Astro asset paths without weakening revision query validation", () => {
     expect(
       parseProductionPreviewRoute(
         new URL(
           `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/${REVISION}/extra`,
+        ),
+        "landing-mcp.skydeo.com",
+      ),
+    ).toEqual({
+      revision: null,
+      sandboxId: "skydeo-14de4f8f27054cd5afb2deb9ded5057e",
+    });
+    expect(
+      parseProductionPreviewRoute(
+        new URL(
+          `https://${EXPOSED_HOST_LABEL}.landing-mcp.skydeo.com/?revision=invalid`,
         ),
         "landing-mcp.skydeo.com",
       ),

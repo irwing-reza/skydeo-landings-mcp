@@ -12,21 +12,21 @@ export function buildPreviewUrl(
   }
 
   if (isLocalPreviewHostname(previewHostname)) {
-    return `http://${previewHostname}${LOCAL_PREVIEW_PATH}${exposedHostLabel}/${revision}`;
+    return `http://${previewHostname}${LOCAL_PREVIEW_PATH}${exposedHostLabel}/?revision=${revision}`;
   }
 
-  return `${exposedUrl.replace(/\/$/, "")}/${revision}`;
+  return `${exposedUrl}?revision=${revision}`;
 }
 
 export interface LocalPreviewRoute {
   port: number;
-  revision: string;
+  revision: string | null;
   sandboxId: string;
   token: string;
 }
 
 export interface ProductionPreviewRoute {
-  revision: string;
+  revision: string | null;
   sandboxId: string;
 }
 
@@ -59,13 +59,12 @@ export function parseProductionPreviewRoute(
 
   const hostLabel = url.hostname.slice(0, url.hostname.indexOf("."));
   const route = parseExposedHostLabel(hostLabel);
-  const [revision, ...extraSegments] = url.pathname.replace(/^\//, "").split("/");
-  if (
-    route === null ||
-    revision === undefined ||
-    !/^[a-f0-9]{64}$/.test(revision) ||
-    extraSegments.length > 0
-  ) {
+  if (route === null) {
+    return null;
+  }
+
+  const revision = previewRevision(url);
+  if (revision === undefined) {
     return null;
   }
 
@@ -77,15 +76,12 @@ export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
     return null;
   }
 
-  const [exposedHostLabel, revision, ...extraSegments] = url.pathname
+  const [exposedHostLabel] = url.pathname
     .slice(LOCAL_PREVIEW_PATH.length)
     .split("/");
   if (
     exposedHostLabel === undefined ||
-    exposedHostLabel.length === 0 ||
-    revision === undefined ||
-    revision.length === 0 ||
-    extraSegments.length > 0
+    exposedHostLabel.length === 0
   ) {
     return null;
   }
@@ -94,11 +90,19 @@ export function parseLocalPreviewRoute(url: URL): LocalPreviewRoute | null {
   if (exposedRoute === null) {
     return null;
   }
-  if (!/^[a-f0-9]{64}$/.test(revision)) {
-    return null;
-  }
+  const revision = previewRevision(url);
+  return revision === undefined ? null : { ...exposedRoute, revision };
+}
 
-  return { ...exposedRoute, revision };
+function previewRevision(url: URL): string | null | undefined {
+  const queryRevision = url.searchParams.get("revision");
+  if (queryRevision !== null) {
+    return /^[a-f0-9]{64}$/.test(queryRevision) ? queryRevision : undefined;
+  }
+  const [legacyRevision, ...extraSegments] = url.pathname.replace(/^\//, "").split("/");
+  return extraSegments.length === 0 && /^[a-f0-9]{64}$/.test(legacyRevision ?? "")
+    ? legacyRevision ?? null
+    : null;
 }
 
 function parseExposedHostLabel(

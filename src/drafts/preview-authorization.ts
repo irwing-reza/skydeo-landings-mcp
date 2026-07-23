@@ -7,7 +7,7 @@ import type { ProductionPreviewRoute } from "./preview-url";
 
 export type PreviewAuthorizationResolver = (
   draftId: string,
-  revision: string,
+  revision: string | null,
 ) => Promise<PreviewAuthorization>;
 
 export async function requireActivePreviewRoute(
@@ -27,6 +27,9 @@ export async function requireActivePreviewRoute(
     const authorization = await authorize(draftId, route.revision);
     if (authorization.allowed) {
       return null;
+    }
+    if (authorization.state === "active") {
+      return new Response("Preview not found", { status: 404 });
     }
     return Response.json(
       {

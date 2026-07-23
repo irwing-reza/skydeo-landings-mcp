@@ -6,6 +6,14 @@ export const REPOSITORY_CHECKOUT_COMMAND =
 export const REPOSITORY_INSTALL_COMMAND = "npm ci --no-audit --no-fund";
 export const REPOSITORY_CHECK_COMMAND = "npm run check";
 export const REPOSITORY_BUILD_COMMAND = "npm run build";
+export const REPOSITORY_HEADLINE_COMMAND =
+  "/usr/local/bin/apply-landing-headline";
+export const REPOSITORY_TREE_COMMAND =
+  "/usr/local/bin/snapshot-repository-tree";
+export const REPOSITORY_RESTORE_COMMAND =
+  "/usr/local/bin/restore-repository-tree";
+export const REPOSITORY_PREVIEW_COMMAND =
+  "./node_modules/.bin/astro preview --host 0.0.0.0 --port 4322";
 
 const MAX_DIAGNOSTIC_LENGTH = 4_096;
 const VALIDATION_ENVIRONMENT = {
@@ -42,6 +50,7 @@ export interface RepositoryWorkspaceSandbox {
 export type RepositoryCheckoutSandbox = RepositoryWorkspaceSandbox;
 
 export type RepositoryValidationStep = "install" | "check" | "build";
+export type RepositoryEditOperation = "replace_headline";
 
 export interface RepositoryValidationResult {
   install: "passed";
@@ -59,6 +68,13 @@ export class RepositoryValidationError extends Error {
     this.name = "RepositoryValidationError";
     this.step = step;
     this.exitCode = exitCode;
+  }
+}
+
+export class RepositoryEditError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RepositoryEditError";
   }
 }
 
@@ -160,6 +176,123 @@ export async function installAndValidateRepository(
     install: "passed",
     checks: [REPOSITORY_CHECK_COMMAND, REPOSITORY_BUILD_COMMAND],
   };
+}
+
+export async function validateRepositoryChanges(
+  sandbox: RepositoryWorkspaceSandbox,
+): Promise<RepositoryValidationResult> {
+  await runRepositoryValidationStep(
+    sandbox,
+    "check",
+    REPOSITORY_CHECK_COMMAND,
+    300_000,
+  );
+  await runRepositoryValidationStep(
+    sandbox,
+    "build",
+    REPOSITORY_BUILD_COMMAND,
+    300_000,
+  );
+
+  return {
+    install: "passed",
+    checks: [REPOSITORY_CHECK_COMMAND, REPOSITORY_BUILD_COMMAND],
+  };
+}
+
+export async function replaceRepositoryHeadline(
+  sandbox: RepositoryWorkspaceSandbox,
+  pagePath: string,
+  headline: string,
+): Promise<string> {
+  assertRepositoryPagePath(pagePath);
+  if (!pagePath.includes("/pages/") || !pagePath.endsWith(".astro")) {
+    throw new RepositoryEditError("Headline replacement requires a resolved Astro page source");
+  }
+  if (headline.trim() !== headline || headline.length === 0 || headline.length > 160) {
+    throw new RepositoryEditError("The replacement headline must contain 1 to 160 characters");
+  }
+
+  const edit = await runRepositoryEditCommand(sandbox, REPOSITORY_HEADLINE_COMMAND, {
+    LANDING_HEADLINE: headline,
+    REPOSITORY_PAGE_PATH: pagePath,
+  });
+  if (edit.stdout.trim() !== "headline_replaced") {
+    throw new RepositoryEditError("The headline edit did not complete safely");
+  }
+  return snapshotRepositoryTree(sandbox, pagePath);
+}
+
+export async function snapshotRepositoryTree(
+  sandbox: RepositoryWorkspaceSandbox,
+  pagePath: string,
+): Promise<string> {
+  assertRepositoryPagePath(pagePath);
+  const result = await runRepositoryEditCommand(sandbox, REPOSITORY_TREE_COMMAND, {
+    REPOSITORY_PAGE_PATH: pagePath,
+  });
+  const treeSha = result.stdout.trim();
+  if (!/^[a-f0-9]{40,64}$/.test(treeSha)) {
+    throw new RepositoryEditError("The repository tree revision could not be verified");
+  }
+  return treeSha;
+}
+
+export async function restoreRepositoryTree(
+  sandbox: RepositoryWorkspaceSandbox,
+  pagePath: string,
+  treeSha: string,
+): Promise<void> {
+  assertRepositoryPagePath(pagePath);
+  if (!/^[a-f0-9]{40,64}$/.test(treeSha)) {
+    throw new RepositoryEditError("The stored repository tree revision is invalid");
+  }
+  const result = await runRepositoryEditCommand(sandbox, REPOSITORY_RESTORE_COMMAND, {
+    REPOSITORY_PAGE_PATH: pagePath,
+    REPOSITORY_TREE_SHA: treeSha,
+  });
+  if (result.stdout.trim() !== treeSha) {
+    throw new RepositoryEditError("The previous repository tree could not be restored");
+  }
+}
+
+export async function repositoryTreeRevision(
+  baseSha: string,
+  treeSha: string,
+): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(`repository-tree-v1\0${baseSha}\0${treeSha}`),
+  );
+  return Array.from(new Uint8Array(digest), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+async function runRepositoryEditCommand(
+  sandbox: RepositoryWorkspaceSandbox,
+  command: string,
+  env: Record<string, string>,
+): Promise<Pick<ExecResult, "success" | "exitCode" | "stdout" | "stderr">> {
+  let result: Pick<ExecResult, "success" | "exitCode" | "stdout" | "stderr">;
+  try {
+    result = await sandbox.exec(command, {
+      cwd: REPOSITORY_WORKSPACE_PATH,
+      env: { ...VALIDATION_ENVIRONMENT, ...env },
+      timeout: 30_000,
+    });
+  } catch {
+    throw new RepositoryEditError("The repository edit command could not be completed");
+  }
+  if (!result.success) {
+    const diagnostic = boundedRedactedDiagnostic(result.stderr, result.stdout);
+    throw new RepositoryEditError(
+      diagnostic.length === 0
+        ? `The repository edit was rejected (exit code ${String(result.exitCode)})`
+        : diagnostic,
+    );
+  }
+  return result;
 }
 
 async function runRepositoryValidationStep(

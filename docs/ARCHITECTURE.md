@@ -50,9 +50,10 @@ The intended public tool sequence is:
 2. repeat `manage_landing` for revisions, status, and a publish request
 3. `confirm_publish` for one explicit immutable-revision confirmation
 
-`manage_landing` currently supports deterministic initial discovery and status
-reads for persisted legacy drafts. It fails repository-backed create, edit, and
-publish operations closed until their durable implementations exist. The
+`manage_landing` supports deterministic initial discovery, status reads, and one
+bounded existing-page `replace_headline` workflow backed by an exact-SHA
+repository workspace and Astro preview. New pages, other edit types, and publish
+operations remain closed until their durable implementations exist. The
 separate `confirm_publish` tool requires `landings:publish` and fails closed
 without reading draft state until durable one-time confirmation records exist.
 The low-level direct-HTML draft tools and `get_service_status` remain available as
@@ -235,7 +236,7 @@ methods; it should not expose the Durable Object directly over public HTTP.
 
 ## Layer 7: Isolated Sandbox workspace
 
-**Status: Implemented for direct-HTML previews; repository workspaces remain planned.**
+**Status: Implemented for direct-HTML previews and repository-backed headline previews.**
 
 The `Sandbox` binding provides an isolated container for repository operations and
 Astro preview execution. [`Dockerfile`](../Dockerfile) uses Node.js 22, Git, and
@@ -247,15 +248,16 @@ are currently both pinned to `0.12.4`.
 Each draft uses a stable, lowercase Sandbox ID derived from the organization and
 draft. The current slice writes immutable HTML files, starts a small static preview
 server on port 4321, and exposes that service through the Sandbox preview proxy.
-A repository-backed workspace lifecycle will eventually:
+A repository-backed headline workspace now:
 
 1. obtain the Sandbox by stable ID;
 2. clone the canonical `skydeo-landings` repository using service credentials;
 3. check out the pinned `baseRevision`;
 4. apply only the requested landing-page changes;
 5. run the repository's required validation commands;
-6. start Astro on port `4321`;
-7. expose or proxy the preview through an authenticated route;
+6. start Astro Preview on internal port `4322`;
+7. rewrite the request hostname through a fixed proxy on port `4321` and expose
+   it through an authenticated route;
 8. persist the resulting revision and preview metadata in `DraftCoordinator`.
 
 Repository credentials belong to the service, not the MCP user or model. They

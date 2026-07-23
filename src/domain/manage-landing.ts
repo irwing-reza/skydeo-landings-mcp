@@ -14,6 +14,9 @@ const NOT_RUN_VALIDATION = {
   checks: [] as const,
   summary: null,
 };
+const KNOWN_PAGE_NAMES: Readonly<Record<string, string>> = {
+  tacograph: "TacoGraph",
+};
 
 /**
  * Resolve requests that do not yet have a draft. This planner is deliberately
@@ -29,11 +32,18 @@ export function planInitialLandingRequest(
     const update = resolvePageUpdateRequest(input.request, snapshot);
     if (update.resolution.status === "resolved") {
       if (update.actionable) {
-        return unavailableRepositoryResult(
+        return {
+          state: "awaiting_details",
           intent,
-          update.resolution.page,
-          `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
-        );
+          page: update.resolution.page,
+          draft_id: null,
+          revision: null,
+          change_summary: `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
+          validation: NOT_RUN_VALIDATION,
+          preview_url: null,
+          next_action:
+            "Headline replacement is currently available. Specify the new headline as ‘change the headline to …’; other edit types remain unavailable.",
+        };
       }
 
       return {
@@ -87,17 +97,54 @@ export function planInitialLandingRequest(
 
 export function inspectLandingDraft(draft: DraftRecord): ManageLandingResult {
   const state = workflowStateForDraft(draft);
+  const repositoryBacked = draft.repositoryTreeSha !== null;
   return {
     state,
     intent: "inspect_status",
-    page: null,
+    page: pageForDraft(draft),
     draft_id: draft.id,
-    revision: draft.currentRevision,
-    change_summary:
-      "This is a legacy HTML-backed draft; repository-backed change records are not available.",
-    validation: NOT_RUN_VALIDATION,
+    revision: publicRevision(draft),
+    change_summary: repositoryBacked
+      ? draft.repositoryChangeSummary ?? "The repository-backed draft is ready."
+      : "This is a legacy HTML-backed draft; repository-backed change records are not available.",
+    validation: repositoryBacked
+      ? {
+          status: "passed",
+          checks: ["npm run check", "npm run build"],
+          summary: "The persisted repository revision passed canonical validation.",
+        }
+      : NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
-    next_action: nextActionForDraftState(state),
+    next_action:
+      repositoryBacked && state === "preview_ready"
+        ? "Review the Astro preview or request another headline revision with this draft_id and expected_revision. Publishing remains unavailable."
+        : nextActionForDraftState(state),
+  };
+}
+
+export function repositoryMutationResult(
+  intent: ManageLandingResult["intent"],
+  mutation: {
+    draft: DraftRecord;
+    changeSummary: string;
+    validation: ManageLandingResult["validation"];
+  },
+): ManageLandingResult {
+  const passed = mutation.validation.status === "passed";
+  return {
+    state: passed ? "preview_ready" : "validation_failed",
+    intent,
+    page: pageForDraft(mutation.draft),
+    draft_id: mutation.draft.id,
+    revision: publicRevision(mutation.draft),
+    change_summary: mutation.changeSummary,
+    validation: mutation.validation,
+    preview_url: activePreviewUrl(mutation.draft),
+    next_action: passed
+      ? "Review the Astro preview or request another headline revision with this draft_id and expected_revision."
+      : mutation.draft.repositoryWorkspaceStatus === "failed"
+        ? "Correct or narrow the requested headline change, then start a new update. The failed disposable workspace was retired."
+        : "Correct or narrow the requested headline change, then retry with the same draft_id and expected_revision. The previous revision remains active.",
   };
 }
 
@@ -117,7 +164,9 @@ export function unavailableDraftOperation(
     validation: NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
     next_action:
-      "Confirm the canonical repository boundary and service credentials before retrying this operation.",
+      intent === "request_publish"
+        ? "Publishing remains unavailable until confirmation records and the separate PR-only publishing identity are implemented."
+        : "This draft does not support repository-backed editing; start a new supported existing-page update.",
   };
 }
 
@@ -183,4 +232,35 @@ function nextActionForDraftState(state: LandingWorkflowState): string {
     default:
       return "Repository-backed revisions are unavailable until the repository boundary is configured.";
   }
+}
+
+function pageForDraft(draft: DraftRecord): ManageLandingResult["page"] {
+  if (draft.repositoryPagePath === null) {
+    return null;
+  }
+  const domain = draft.repositoryPagePath.split("/")[2] ?? draft.hostname.split(".")[0] ?? "page";
+  const pageFile = draft.repositoryPagePath.split("/pages/")[1] ?? "index.astro";
+  const pathname = pageFile === "index.astro"
+    ? "/"
+    : `/${pageFile.replace(/\.astro$/u, "")}`;
+  return {
+    hostname: draft.hostname,
+    name:
+      KNOWN_PAGE_NAMES[domain] ??
+      domain
+        .split("-")
+        .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+        .join(" "),
+    pathname,
+    production_registered: true,
+    production_url: `https://${draft.hostname}${pathname}`,
+    source_path: draft.repositoryPagePath,
+    subdomain: draft.hostname.split(".")[0] ?? domain,
+  };
+}
+
+function publicRevision(draft: DraftRecord): string | null {
+  return /^[a-f0-9]{64}$/u.test(draft.currentRevision)
+    ? draft.currentRevision
+    : null;
 }

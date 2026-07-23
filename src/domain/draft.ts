@@ -39,6 +39,9 @@ export interface DraftRecord {
   repositoryWorkspaceId: string | null;
   repositoryWorkspaceStatus: RepositoryWorkspaceStatus | null;
   repositoryPreparedAt: number | null;
+  repositoryTreeSha: string | null;
+  repositoryChangeOperation: string | null;
+  repositoryChangeSummary: string | null;
   previewExpiresAt: number;
   previewRevokedAt: number | null;
   previewCleanupStatus: PreviewCleanupStatus;

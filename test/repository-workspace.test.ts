@@ -5,10 +5,14 @@ import {
   REPOSITORY_BUILD_COMMAND,
   REPOSITORY_CHECK_COMMAND,
   REPOSITORY_INSTALL_COMMAND,
+  REPOSITORY_HEADLINE_COMMAND,
+  REPOSITORY_TREE_COMMAND,
   assertRepositoryPagePath,
   boundedRedactedDiagnostic,
   installAndValidateRepository,
   prepareRepositoryCheckout,
+  replaceRepositoryHeadline,
+  repositoryTreeRevision,
   repositoryWorkspaceConfig,
   type RepositoryCheckoutSandbox,
 } from "../src/repository/workspace";
@@ -200,5 +204,68 @@ describe("repository workspace", () => {
     await expect(failure).rejects.toMatchObject({ exitCode: null, step: "install" });
     await expect(failure).rejects.toThrow("Sandbox command failed");
     await expect(failure).rejects.not.toThrow(CHECKOUT_TOKEN);
+  });
+
+  it("applies a headline through fixed commands and snapshots the repository tree", async () => {
+    const treeSha = "b".repeat(40);
+    const invocations: Array<{ command: string; env: Record<string, string> }> = [];
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command, options) {
+        invocations.push({ command, env: options.env ?? {} });
+        return Promise.resolve({
+          exitCode: 0,
+          stderr: "",
+          stdout: command === REPOSITORY_HEADLINE_COMMAND ? "headline_replaced\n" : `${treeSha}\n`,
+          success: true,
+        });
+      },
+    };
+
+    await expect(
+      replaceRepositoryHeadline(
+        sandbox,
+        "src/domains/tacograph/pages/index.astro",
+        "Cook smarter",
+      ),
+    ).resolves.toBe(treeSha);
+    expect(invocations.map(({ command }) => command)).toEqual([
+      REPOSITORY_HEADLINE_COMMAND,
+      REPOSITORY_TREE_COMMAND,
+    ]);
+    expect(invocations[0]?.env).toMatchObject({
+      LANDING_HEADLINE: "Cook smarter",
+      REPOSITORY_PAGE_PATH: "src/domains/tacograph/pages/index.astro",
+    });
+    expect(invocations[0]?.env).not.toHaveProperty("REPOSITORY_CHECKOUT_TOKEN");
+  });
+
+  it("derives stable public revisions from immutable repository tree state", async () => {
+    const first = await repositoryTreeRevision(BASE_SHA, "a".repeat(40));
+    const repeated = await repositoryTreeRevision(BASE_SHA, "a".repeat(40));
+    const changed = await repositoryTreeRevision(BASE_SHA, "b".repeat(40));
+
+    expect(first).toMatch(/^[a-f0-9]{64}$/);
+    expect(repeated).toBe(first);
+    expect(changed).not.toBe(first);
+  });
+
+  it("rejects ambiguous edit diagnostics without exposing credential-like values", async () => {
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec: () =>
+        Promise.resolve({
+          exitCode: 64,
+          stderr: "token=should-not-escape\nExpected exactly one h1",
+          stdout: "",
+          success: false,
+        }),
+    };
+
+    const failure = replaceRepositoryHeadline(
+      sandbox,
+      "src/domains/tacograph/pages/index.astro",
+      "Cook smarter",
+    );
+    await expect(failure).rejects.toThrow("[REDACTED]");
+    await expect(failure).rejects.not.toThrow("should-not-escape");
   });
 });

@@ -30,3 +30,33 @@ const ACTIONABLE_UPDATE_PATTERN =
 export function hasActionablePageChange(request: string): boolean {
   return ACTIONABLE_UPDATE_PATTERN.test(request);
 }
+
+export interface ReplaceHeadlineChange {
+  operation: "replace_headline";
+  headline: string;
+}
+
+/**
+ * Parse only the first deliberately narrow repository edit. Other actionable
+ * requests remain awaiting_details until their own bounded operation exists.
+ */
+export function parseReplaceHeadlineChange(
+  request: string,
+): ReplaceHeadlineChange | null {
+  const match = /\b(?:headline|heading)\s+(?:to|with)\s+([\s\S]+)$/iu.exec(request.trim());
+  if (match?.[1] === undefined) {
+    return null;
+  }
+
+  let headline = match[1].trim();
+  const pairedQuote = /^(?:"([\s\S]*)"|'([\s\S]*)'|“([\s\S]*)”)$/u.exec(headline);
+  if (pairedQuote !== null) {
+    headline = pairedQuote[1] ?? pairedQuote[2] ?? pairedQuote[3] ?? "";
+  }
+  headline = headline.trim();
+  if (headline.length === 0 || headline.length > 160 || /[\r\n]/u.test(headline)) {
+    return null;
+  }
+
+  return { operation: "replace_headline", headline };
+}

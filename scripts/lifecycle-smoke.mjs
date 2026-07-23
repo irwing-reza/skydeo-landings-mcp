@@ -30,6 +30,9 @@ const client = new Client({ name: "skydeo-lifecycle-smoke", version: "0.1.0" });
 
 try {
   await client.connect(transport);
+  if (!isLocal) {
+    await verifyRepositoryWorkspacePreflight();
+  }
   report("connected", { target: mcpUrl.origin, scenario: options.scenario });
 
   if (options.scenario === "all" || options.scenario === "revoked") {
@@ -42,6 +45,29 @@ try {
   report("smoke_passed", { scenario: options.scenario });
 } finally {
   await transport.close();
+}
+
+async function verifyRepositoryWorkspacePreflight() {
+  const result = await client.callTool({ name: "get_service_status", arguments: {} });
+  assert(!result.isError, "repository-workspace preflight could not read service status");
+  const status = result.structuredContent;
+  assert(
+    status && typeof status === "object" && status.service === "skydeo-landing-mcp",
+    "repository-workspace preflight received an unexpected service",
+  );
+  assert(
+    status.capabilities?.repositoryBackedEditing === true,
+    "remote lifecycle smoke requires repository-backed editing",
+  );
+  assert(
+    status.capabilities?.repositoryWorkspaceCleanup === true,
+    "remote lifecycle smoke requires repository-workspace cleanup",
+  );
+  assert(
+    status.capabilities?.publish === false && status.capabilities?.confirmPublish === false,
+    "remote lifecycle smoke requires publishing to remain disabled",
+  );
+  report("repository_workspace_preflight_passed");
 }
 
 async function verifyRevocationLifecycle() {

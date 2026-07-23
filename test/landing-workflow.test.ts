@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import { permissionForLandingIntent } from "../src/domain/landing-authorization";
-import { classifyLandingIntent, hasActionablePageChange } from "../src/domain/landing-intent";
+import {
+  classifyLandingIntent,
+  hasActionablePageChange,
+  parseReplaceHeadlineChange,
+} from "../src/domain/landing-intent";
 import {
   inspectLandingDraft,
   planInitialLandingRequest,
+  repositoryMutationResult,
   unavailableDraftOperation,
 } from "../src/domain/manage-landing";
 import {
@@ -91,19 +96,31 @@ describe("manage_landing contract", () => {
     expect(result.next_action).toContain("all desired");
   });
 
-  it("fails a concrete update closed before repository configuration", () => {
+  it("routes a concrete unsupported edit to the bounded headline operation", () => {
     const result = planInitialLandingRequest(
       { request: "Change the TacoGraph headline to Cook smarter" },
       LOCAL_CANDIDATE_LANDING_SNAPSHOT,
     );
 
     expect(result).toMatchObject({
-      state: "failed",
+      state: "awaiting_details",
       intent: "update_page",
       draft_id: null,
       page: { name: "TacoGraph" },
     });
-    expect(result.next_action).toContain("canonical repository boundary");
+    expect(result.next_action).toContain("change the headline to");
+  });
+
+  it("extracts one bounded headline replacement", () => {
+    expect(
+      parseReplaceHeadlineChange(
+        "Change the TacoGraph headline to “Cook smarter, every service”",
+      ),
+    ).toEqual({
+      operation: "replace_headline",
+      headline: "Cook smarter, every service",
+    });
+    expect(parseReplaceHeadlineChange("Update the TacoGraph copy")).toBeNull();
   });
 
   it("maps a persisted preview into the unified status response", () => {
@@ -115,6 +132,32 @@ describe("manage_landing contract", () => {
       draft_id: "b03a5b3a-5382-4b63-873c-f87e35ba8966",
       revision: "a".repeat(64),
       preview_url: "https://preview.example.test",
+    });
+  });
+
+  it("returns a validated repository-backed Astro preview result", () => {
+    const draft = draftRecord();
+    draft.repositoryPagePath = "src/domains/tacograph/pages/index.astro";
+    draft.repositoryWorkspaceStatus = "ready";
+    draft.repositoryTreeSha = "b".repeat(40);
+    draft.repositoryChangeOperation = "replace_headline";
+    draft.repositoryChangeSummary = "Replaced the TacoGraph headline.";
+
+    expect(
+      repositoryMutationResult("update_page", {
+        draft,
+        changeSummary: "Replaced the TacoGraph headline.",
+        validation: {
+          status: "passed",
+          checks: ["npm run check", "npm run build"],
+          summary: "The canonical repository checks passed.",
+        },
+      }),
+    ).toMatchObject({
+      state: "preview_ready",
+      page: { name: "TacoGraph" },
+      revision: "a".repeat(64),
+      validation: { status: "passed" },
     });
   });
 
@@ -169,6 +212,9 @@ function draftRecord(): DraftRecord {
     repositoryWorkspaceId: null,
     repositoryWorkspaceStatus: null,
     repositoryPreparedAt: null,
+    repositoryTreeSha: null,
+    repositoryChangeOperation: null,
+    repositoryChangeSummary: null,
     previewExpiresAt: Date.now() + 60_000,
     previewRevokedAt: null,
     previewCleanupStatus: "scheduled",

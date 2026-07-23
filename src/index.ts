@@ -105,7 +105,7 @@ export default {
 
 interface LocalPreviewRoute {
   port: number;
-  revision: string;
+  revision: string | null;
   sandboxId: string;
   token: string;
 }
@@ -137,7 +137,12 @@ async function proxyLocalPreview(
   headers.set("x-sandbox-preview-sandbox-id", route.sandboxId);
 
   const previewUrl = new URL(request.url);
-  previewUrl.pathname = `/${route.revision}`;
+  const forwardedPath = previewUrl.pathname
+    .slice("/__preview/".length)
+    .split("/")
+    .slice(1)
+    .join("/");
+  previewUrl.pathname = `/${forwardedPath}`;
   return sandbox.fetch(new Request(previewUrl, { headers, method: request.method }));
 }
 
