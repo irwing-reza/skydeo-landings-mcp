@@ -21,7 +21,8 @@ import { LOCAL_CANDIDATE_LANDING_SNAPSHOT } from "../src/repository/page-catalog
 import type { DraftRecord } from "../src/domain/draft";
 import {
   repositoryDraftId,
-  repositoryResumeStrategy,
+  repositoryExecutionPhase,
+  repositoryProcessAction,
 } from "../src/domain/repository-execution";
 
 describe("manage_landing contract", () => {
@@ -74,6 +75,7 @@ describe("manage_landing contract", () => {
       change_summary: "No changes yet",
       change_operations: [],
       execution_phase: null,
+      execution_step: null,
       validation: { status: "not_run", checks: [], summary: null },
       preview_url: null,
       next_action: "Identify the page and requested changes.",
@@ -178,6 +180,7 @@ describe("manage_landing contract", () => {
     preparing.repositoryWorkspaceStatus = "preparing";
     preparing.repositoryOperationStatus = "queued";
     preparing.repositoryOperationPhase = "checkout";
+    preparing.repositoryExecutionStep = "checkout";
     preparing.repositoryChangeOperation = JSON.stringify([
       { operation: "replace_headline", value: "Cook smarter" },
     ]);
@@ -188,6 +191,7 @@ describe("manage_landing contract", () => {
       revision: null,
       validation: { status: "pending" },
       execution_phase: "checkout",
+      execution_step: "checkout",
       preview_url: null,
     });
 
@@ -218,10 +222,28 @@ describe("manage_landing contract", () => {
     expect(otherActor).not.toBe(first);
   });
 
-  it("selects restart-safe recovery for initial and revision operations", () => {
-    expect(repositoryResumeStrategy("queued", null)).toBe("continue_initial");
-    expect(repositoryResumeStrategy("running", null)).toBe("reset_initial");
-    expect(repositoryResumeStrategy("running", "b".repeat(40))).toBe("restore_revision");
+  it("reconnects durable repository steps without restarting their command", () => {
+    expect(repositoryProcessAction(null, null, 1_000, 2_000)).toBe("dispatch");
+    expect(repositoryProcessAction("repository-1-check", null, 1_100, 2_000)).toBe(
+      "dispatch",
+    );
+    expect(
+      repositoryProcessAction("repository-1-check", "running", 1_200, 2_000),
+    ).toBe("poll");
+    expect(
+      repositoryProcessAction("repository-1-check", "completed", 1_300, 2_000),
+    ).toBe("complete");
+    expect(
+      repositoryProcessAction("repository-1-check", "running", 2_000, 2_000),
+    ).toBe("timeout");
+  });
+
+  it("keeps durable internal steps mapped to actionable public phases", () => {
+    expect(repositoryExecutionPhase("checkout")).toBe("checkout");
+    expect(repositoryExecutionPhase("install")).toBe("install");
+    expect(repositoryExecutionPhase("base_check")).toBe("check");
+    expect(repositoryExecutionPhase("build")).toBe("build");
+    expect(repositoryExecutionPhase("preview_verify")).toBe("preview");
   });
 
   it("does not return a revoked preview URL from unified status", () => {
@@ -280,6 +302,12 @@ function draftRecord(): DraftRecord {
     repositoryChangeSummary: null,
     repositoryOperationStatus: null,
     repositoryOperationPhase: null,
+    repositoryExecutionStep: null,
+    repositoryProcessId: null,
+    repositoryStepStartedAt: null,
+    repositoryStepDeadlineAt: null,
+    repositoryPendingTreeSha: null,
+    repositoryPendingFailure: null,
     repositoryOperationError: null,
     repositoryOperationDeadlineAt: null,
     repositoryOperationAttempt: 0,

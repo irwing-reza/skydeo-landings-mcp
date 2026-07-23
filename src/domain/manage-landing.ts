@@ -41,6 +41,7 @@ export function planInitialLandingRequest(
           change_summary: `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
           change_operations: [],
           execution_phase: null,
+          execution_step: null,
           validation: NOT_RUN_VALIDATION,
           preview_url: null,
           next_action:
@@ -57,6 +58,7 @@ export function planInitialLandingRequest(
         change_summary: `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
         change_operations: [],
         execution_phase: null,
+        execution_step: null,
         validation: NOT_RUN_VALIDATION,
         preview_url: null,
         next_action: update.question ?? "Describe the desired page changes.",
@@ -72,6 +74,7 @@ export function planInitialLandingRequest(
       change_summary: "No page was selected and no changes were applied.",
       change_operations: [],
       execution_phase: null,
+      execution_step: null,
       validation: NOT_RUN_VALIDATION,
       preview_url: null,
       next_action:
@@ -97,6 +100,7 @@ export function planInitialLandingRequest(
     change_summary: "No draft was selected and no changes were applied.",
     change_operations: [],
     execution_phase: null,
+    execution_step: null,
     validation: NOT_RUN_VALIDATION,
     preview_url: null,
     next_action: "Provide the draft_id for the workflow you want to inspect or continue.",
@@ -121,6 +125,7 @@ export function inspectLandingDraft(
       : "This is a legacy HTML-backed draft; repository-backed change records are not available.",
     change_operations: storedChangeOperations(draft),
     execution_phase: draft.repositoryOperationPhase,
+    execution_step: draft.repositoryExecutionStep,
     validation: repositoryBacked ? validation : NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
     next_action:
@@ -149,6 +154,7 @@ export function repositoryMutationResult(
     change_summary: mutation.changeSummary,
     change_operations: mutation.operationNames,
     execution_phase: mutation.draft.repositoryOperationPhase,
+    execution_step: mutation.draft.repositoryExecutionStep,
     validation: mutation.validation,
     preview_url: activePreviewUrl(mutation.draft),
     next_action: passed
@@ -174,6 +180,7 @@ export function unavailableDraftOperation(
     change_summary: `No changes were applied; ${operation} is not configured.`,
     change_operations: [],
     execution_phase: draft.repositoryOperationPhase,
+    execution_step: draft.repositoryExecutionStep,
     validation: NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
     next_action:
@@ -197,6 +204,7 @@ function unavailableRepositoryResult(
     change_summary: changeSummary,
     change_operations: [],
     execution_phase: null,
+    execution_step: null,
     validation: NOT_RUN_VALIDATION,
     preview_url: null,
     next_action:

@@ -35,7 +35,7 @@ The intended public MCP boundary is:
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
 | Unified landing workflow | In progress | `manage_landing` composes bounded existing-page edits; the asynchronous replacement for the timed-out production path is implemented locally, while create and publish remain closed |
 | Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, rendered-route inspection, and cleanup are connected for bounded edit batches |
-| Asynchronous repository execution | Implemented locally; production retest pending | Initial mutations use actor-scoped idempotent draft IDs, persist queued work before Sandbox access, continue by alarm, expose polling, and share lifecycle cleanup |
+| Asynchronous repository execution | Durable step boundaries implemented locally; production retest pending | Alarms persist deterministic Container process IDs, dispatch or poll one step per invocation, expose phase and step polling, and never await a multi-minute repository command |
 | Structured editing | In progress | The initial operation set is implemented with static-target and single-page boundaries; broader layout/source transformations remain closed |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
@@ -298,7 +298,7 @@ Acceptance criteria:
 
 ## Milestone 8: Complete the validate, preview, and revise loop
 
-**Status: Durable asynchronous execution implemented locally; production retest pending**
+**Status: Durable per-step asynchronous execution implemented locally; production retest pending**
 
 After each edit batch:
 
@@ -341,6 +341,13 @@ The next implementation slice must make repository work durable and asynchronous
       before its draft ID reached the caller.
 - [x] Define cancellation and timeout behavior so every allocated workspace is
       either retained behind an active draft lifecycle or destroyed and audited.
+- [x] Persist a deterministic Container process ID and independent deadline before
+      dispatching every checkout, install, check, build, edit, restore, and rendered
+      verification command.
+- [x] Limit each alarm invocation to one dispatch, poll, completion, readiness, or
+      exposure action; never await a multi-minute Container command from an alarm.
+- [x] Reconnect alarm retries to an existing process record and fail closed when
+      upgrading an untracked legacy in-flight operation.
 - [x] Verify deterministic retry/recovery and restart-safe persisted phases with
       unit coverage; update the container-backed repository smoke to require a
       prompt initiating response, idempotent recovery, durable polling, terminal
@@ -357,16 +364,34 @@ persists the immutable repository boundary, workspace ID, bounded edit batch,
 operation deadline, and `queued` status before setting its alarm and returning.
 No checkout, install, validation, build, or preview call occurs on that request.
 
-The alarm transitions through durable `running` state, re-enters safely after an
-eviction, and records terminal `succeeded`, `validation_failed`, `failed`, or
-`cancelled` outcomes. An interrupted initial attempt destroys and recreates its
-disposable workspace before retrying; an interrupted revision restores the last
-persisted tree before applying its batch. Each command retains its existing fixed
-timeout and the overall operation has a 30-minute durable deadline. Revocation or
-expiry marks active work cancelled and routes workspace destruction through the
-same idempotent cleanup alarm. Initial failures destroy the workspace; revision
-failures expose redacted diagnostics and retain the last valid revision only when
-its tree restoration verifies successfully.
+The production alarm destruction exposed a second architectural boundary: an
+alarm must not synchronously await a multi-minute Container command. Repository
+execution now persists an internal step, deterministic process ID, step start,
+and independent step deadline before dispatch. One alarm invocation performs at
+most one bounded action: dispatch a process, poll its durable record, consume its
+bounded redacted result, or advance state. It never calls `waitForExit()` and
+never restarts checkout merely because an alarm invocation was destroyed.
+
+The durable sequence distinguishes `checkout`, `install`, baseline `check` and
+`build`, tree restore, bounded edit, tree snapshot, post-edit `check` and `build`,
+preview server/proxy readiness, rendered-route verification, and preview
+exposure. Polling exposes both the stable public phase and the more precise
+internal execution step. Dispatch identity is stored before Container I/O, so a
+lost dispatch response is recovered by looking up the same process ID. Terminal
+process records retain logs (`autoCleanup: false`) until the coordinator has
+persisted the transition.
+
+Each command retains its existing fixed timeout and the overall operation has a
+30-minute durable deadline. The coordinator also enforces the persisted step
+deadline independently, kills an over-budget process, and treats Container
+termination latency as failure rather than success. Revocation or expiry routes
+the entire Sandbox through idempotent cleanup. Initial failures destroy the
+workspace; revision failures use their own durable restore step and retain the
+last valid revision only after that restore verifies successfully.
+
+The possible prebuilt-repository Container optimization is tracked separately in
+`docs/FEATURE_UPDATE_PLAN.md`. It must preserve this durable command boundary and
+all canonical validation rather than serving as a correctness workaround.
 
 Additional Container evidence from deployment `d0390dd3…` showed workspace
 `sandbox-skydeo-1e21bb7fb4894db8bc69c2ce27982724` reaching `command.exec` for
@@ -521,8 +546,8 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Deploy the Milestone 8 asynchronous start, polling, idempotency, recovery, and
-   timeout-cleanup slice before creating another production repository draft.
+1. Review and deploy the Milestone 8 per-step dispatch/poll/completion slice
+   before creating another production repository draft.
 2. Repeat the authorized disposable production lifecycle test only after the
    read-only preflight passes and the initiating call returns a durable draft ID
    within the MCP deadline; then verify preview contents, persisted revision,

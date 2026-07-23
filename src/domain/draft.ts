@@ -1,5 +1,6 @@
 import type { PreviewCleanupStatus } from "./preview-lifecycle";
 import type {
+  RepositoryExecutionStep,
   RepositoryOperationPhase,
   RepositoryOperationStatus,
 } from "./repository-execution";
@@ -48,6 +49,12 @@ export interface DraftRecord {
   repositoryChangeSummary: string | null;
   repositoryOperationStatus: RepositoryOperationStatus | null;
   repositoryOperationPhase: RepositoryOperationPhase | null;
+  repositoryExecutionStep: RepositoryExecutionStep | null;
+  repositoryProcessId: string | null;
+  repositoryStepStartedAt: number | null;
+  repositoryStepDeadlineAt: number | null;
+  repositoryPendingTreeSha: string | null;
+  repositoryPendingFailure: string | null;
   repositoryOperationError: string | null;
   repositoryOperationDeadlineAt: number | null;
   repositoryOperationAttempt: number;

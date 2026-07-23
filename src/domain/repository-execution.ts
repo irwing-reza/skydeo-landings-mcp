@@ -21,10 +21,37 @@ export const REPOSITORY_OPERATION_PHASES = [
 export type RepositoryOperationPhase =
   (typeof REPOSITORY_OPERATION_PHASES)[number];
 
-export type RepositoryResumeStrategy =
-  | "continue_initial"
-  | "reset_initial"
-  | "restore_revision";
+export const REPOSITORY_EXECUTION_STEPS = [
+  "checkout",
+  "install",
+  "base_check",
+  "base_build",
+  "restore",
+  "edit",
+  "snapshot",
+  "check",
+  "build",
+  "preview_start",
+  "preview_astro_ready",
+  "preview_proxy",
+  "preview_proxy_ready",
+  "preview_verify",
+  "preview_expose",
+  "failure_restore",
+] as const;
+
+export type RepositoryExecutionStep =
+  (typeof REPOSITORY_EXECUTION_STEPS)[number];
+
+export type RepositoryProcessState =
+  | "starting"
+  | "running"
+  | "completed"
+  | "failed"
+  | "killed"
+  | "error";
+
+export type RepositoryProcessAction = "dispatch" | "poll" | "complete" | "timeout";
 
 export function isRepositoryOperationStatus(
   value: string,
@@ -38,12 +65,51 @@ export function isRepositoryOperationPhase(
   return REPOSITORY_OPERATION_PHASES.some((phase) => phase === value);
 }
 
-export function repositoryResumeStrategy(
-  status: RepositoryOperationStatus,
-  persistedTreeSha: string | null,
-): RepositoryResumeStrategy {
-  if (persistedTreeSha !== null) return "restore_revision";
-  return status === "running" ? "reset_initial" : "continue_initial";
+export function isRepositoryExecutionStep(
+  value: string,
+): value is RepositoryExecutionStep {
+  return REPOSITORY_EXECUTION_STEPS.some((step) => step === value);
+}
+
+export function repositoryExecutionPhase(
+  step: RepositoryExecutionStep,
+): RepositoryOperationPhase {
+  switch (step) {
+    case "checkout":
+    case "restore":
+    case "failure_restore":
+      return "checkout";
+    case "install":
+      return "install";
+    case "base_check":
+    case "check":
+    case "edit":
+    case "snapshot":
+      return "check";
+    case "base_build":
+    case "build":
+      return "build";
+    case "preview_start":
+    case "preview_astro_ready":
+    case "preview_proxy":
+    case "preview_proxy_ready":
+    case "preview_verify":
+    case "preview_expose":
+      return "preview";
+  }
+}
+
+export function repositoryProcessAction(
+  processId: string | null,
+  processState: RepositoryProcessState | null,
+  now: number,
+  deadline: number | null,
+): RepositoryProcessAction {
+  if (deadline !== null && now >= deadline) return "timeout";
+  if (processId === null || processState === null) return "dispatch";
+  return processState === "starting" || processState === "running"
+    ? "poll"
+    : "complete";
 }
 
 /**

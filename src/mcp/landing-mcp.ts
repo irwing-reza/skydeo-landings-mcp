@@ -150,6 +150,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 change_summary: "No repository change was applied.",
                 change_operations: [],
                 execution_phase: draft.repositoryOperationPhase,
+                execution_step: draft.repositoryExecutionStep,
                 validation: { status: "not_run", checks: [], summary: null },
                 preview_url: inspectLandingDraft(draft).preview_url,
                 next_action:
@@ -397,6 +398,15 @@ function toPublicDraft(draft: DraftRecord) {
     cleanup_status: draft.previewCleanupStatus,
     repository_operation_status: draft.repositoryOperationStatus,
     repository_operation_phase: draft.repositoryOperationPhase,
+    repository_execution_step: draft.repositoryExecutionStep,
+    repository_step_started_at:
+      draft.repositoryStepStartedAt === null
+        ? null
+        : new Date(draft.repositoryStepStartedAt).toISOString(),
+    repository_step_deadline_at:
+      draft.repositoryStepDeadlineAt === null
+        ? null
+        : new Date(draft.repositoryStepDeadlineAt).toISOString(),
     repository_operation_error: draft.repositoryOperationError,
     repository_operation_attempt: draft.repositoryOperationAttempt,
     cleaned_up_at:
