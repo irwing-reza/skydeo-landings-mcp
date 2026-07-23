@@ -11,3 +11,17 @@ enabled_tools = [
 default_tools_approval_mode = "auto"
 startup_timeout_sec = 20
 tool_timeout_sec = 120
+
+[mcp_servers.skydeo_landing_prod]
+url = "https://landing-mcp.skydeo.com/mcp"
+enabled = true
+required = false
+enabled_tools = [
+  "get_service_status",
+  "create_draft",
+  "get_draft",
+  "update_draft",
+]
+default_tools_approval_mode = "auto"
+startup_timeout_sec = 20
+tool_timeout_sec = 120
