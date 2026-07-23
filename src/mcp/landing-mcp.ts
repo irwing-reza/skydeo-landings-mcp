@@ -15,8 +15,8 @@ import {
 } from "../domain/manage-landing";
 import {
   classifyLandingIntent,
-  parseReplaceHeadlineChange,
 } from "../domain/landing-intent";
+import { parseLandingEditBatch } from "../domain/landing-edits";
 import { resolvePageUpdateRequest } from "../domain/page-request";
 import type { ManageLandingRequest, ManageLandingResult } from "../domain/landing-workflow";
 import { previewLifecycleState } from "../domain/preview-lifecycle";
@@ -46,7 +46,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
       "manage_landing",
       {
         description:
-          "Resolve and inspect the unified Skydeo landing-page workflow. Existing-page headline replacements create validated repository-backed Astro previews; unsupported edit, create, and publish branches fail closed. This tool never confirms or completes publishing.",
+          "Resolve and inspect the unified Skydeo landing-page workflow. Existing-page headline, hero copy, CTA, SEO, image, and bounded section-order changes can compose into one validated repository-backed Astro preview. Unsupported create and publish branches fail closed. This tool never confirms or completes publishing.",
         inputSchema: {
           request: z.string().trim().min(1).max(10_000),
           draft_id: z.uuid().optional(),
@@ -71,18 +71,18 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 request.request,
                 LOCAL_CANDIDATE_LANDING_SNAPSHOT,
               );
-              const change = parseReplaceHeadlineChange(request.request);
+              const editBatch = parseLandingEditBatch(request.request);
               if (
                 update.resolution.status === "resolved" &&
                 update.actionable &&
-                change !== null
+                editBatch.status === "parsed"
               ) {
                 const id = crypto.randomUUID();
                 const mutation = await this.env.DRAFTS.getByName(
                   draftObjectName(auth.organizationId, id),
                 ).createRepositoryDraft({
                   createdBy: auth.claims.sub,
-                  headline: change.headline,
+                  edits: editBatch.operations,
                   hostname: update.resolution.page.hostname,
                   id,
                   organizationId: auth.organizationId,
@@ -112,8 +112,8 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 "expected_revision is required to update a repository-backed draft",
               );
             }
-            const change = parseReplaceHeadlineChange(request.request);
-            if (change === null) {
+            const editBatch = parseLandingEditBatch(request.request);
+            if (editBatch.status === "needs_details") {
               return workflowResult({
                 state: "awaiting_details",
                 intent,
@@ -121,17 +121,18 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 draft_id: draft.id,
                 revision: draft.currentRevision,
                 change_summary: "No repository change was applied.",
+                change_operations: [],
                 validation: { status: "not_run", checks: [], summary: null },
                 preview_url: inspectLandingDraft(draft).preview_url,
                 next_action:
-                  "Specify one headline replacement as ‘change the headline to …’. Other repository edit operations remain unavailable.",
+                  editBatch.message,
               });
             }
             const mutation = await this.env.DRAFTS.getByName(
               draftObjectName(auth.organizationId, input.draft_id),
             ).updateRepositoryDraft({
               expectedRevision: input.expected_revision,
-              headline: change.headline,
+              edits: editBatch.operations,
               organizationId: auth.organizationId,
               previewHostname: this.env.PREVIEW_HOSTNAME,
             });
@@ -190,6 +191,14 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
             manageLanding: true,
             repositoryBackedEditing: true,
             repositoryWorkspaceCleanup: true,
+            supportedRepositoryEdits: [
+              "replace_headline",
+              "update_copy",
+              "update_cta",
+              "update_seo_metadata",
+              "replace_image",
+              "move_section",
+            ],
             confirmPublish: false,
             createDraft: true,
             getDraft: true,

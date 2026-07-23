@@ -5,15 +5,17 @@ import {
   REPOSITORY_BUILD_COMMAND,
   REPOSITORY_CHECK_COMMAND,
   REPOSITORY_INSTALL_COMMAND,
-  REPOSITORY_HEADLINE_COMMAND,
+  REPOSITORY_EDIT_COMMAND,
+  REPOSITORY_PREVIEW_VERIFY_COMMAND,
   REPOSITORY_TREE_COMMAND,
   assertRepositoryPagePath,
+  applyRepositoryEdits,
   boundedRedactedDiagnostic,
   installAndValidateRepository,
   prepareRepositoryCheckout,
-  replaceRepositoryHeadline,
   repositoryTreeRevision,
   repositoryWorkspaceConfig,
+  verifyRepositoryPreview,
   type RepositoryCheckoutSandbox,
 } from "../src/repository/workspace";
 import { isRepositoryWorkspaceStatus } from "../src/domain/draft";
@@ -215,25 +217,27 @@ describe("repository workspace", () => {
         return Promise.resolve({
           exitCode: 0,
           stderr: "",
-          stdout: command === REPOSITORY_HEADLINE_COMMAND ? "headline_replaced\n" : `${treeSha}\n`,
+          stdout: command === REPOSITORY_EDIT_COMMAND ? "landing_edits_applied\n" : `${treeSha}\n`,
           success: true,
         });
       },
     };
 
     await expect(
-      replaceRepositoryHeadline(
+      applyRepositoryEdits(
         sandbox,
         "src/domains/tacograph/pages/index.astro",
-        "Cook smarter",
+        [{ operation: "replace_headline", value: "Cook smarter" }],
       ),
     ).resolves.toBe(treeSha);
     expect(invocations.map(({ command }) => command)).toEqual([
-      REPOSITORY_HEADLINE_COMMAND,
+      REPOSITORY_EDIT_COMMAND,
       REPOSITORY_TREE_COMMAND,
     ]);
     expect(invocations[0]?.env).toMatchObject({
-      LANDING_HEADLINE: "Cook smarter",
+      LANDING_EDIT_BATCH: JSON.stringify([
+        { operation: "replace_headline", value: "Cook smarter" },
+      ]),
       REPOSITORY_PAGE_PATH: "src/domains/tacograph/pages/index.astro",
     });
     expect(invocations[0]?.env).not.toHaveProperty("REPOSITORY_CHECKOUT_TOKEN");
@@ -249,6 +253,56 @@ describe("repository workspace", () => {
     expect(changed).not.toBe(first);
   });
 
+  it("passes a composed edit batch only through the fixed edit environment", async () => {
+    const treeSha = "c".repeat(40);
+    const commands: string[] = [];
+    const environments: Record<string, string>[] = [];
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command, options) {
+        commands.push(command);
+        environments.push(options.env ?? {});
+        return Promise.resolve({
+          exitCode: 0,
+          stderr: "",
+          stdout: command === REPOSITORY_EDIT_COMMAND ? "landing_edits_applied\n" : `${treeSha}\n`,
+          success: true,
+        });
+      },
+    };
+    const edits = [
+      { operation: "update_copy" as const, value: "New copy" },
+      { operation: "update_cta" as const, label: "Start", href: "/start" },
+    ];
+
+    await expect(
+      applyRepositoryEdits(sandbox, "src/domains/tacograph/pages/index.astro", edits),
+    ).resolves.toBe(treeSha);
+    expect(commands).toEqual([REPOSITORY_EDIT_COMMAND, REPOSITORY_TREE_COMMAND]);
+    expect(environments[0]?.LANDING_EDIT_BATCH).toBe(JSON.stringify(edits));
+    expect(environments[0]).not.toHaveProperty("REPOSITORY_CHECKOUT_TOKEN");
+  });
+
+  it("verifies the rendered route through a fixed non-secret command", async () => {
+    const edits = [{ operation: "replace_headline" as const, value: "Cook smarter" }];
+    let capturedEnvironment: Record<string, string> = {};
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command, options) {
+        expect(command).toBe(REPOSITORY_PREVIEW_VERIFY_COMMAND);
+        capturedEnvironment = options.env ?? {};
+        return Promise.resolve({
+          exitCode: 0,
+          stderr: "",
+          stdout: "preview_verified\n",
+          success: true,
+        });
+      },
+    };
+
+    await expect(verifyRepositoryPreview(sandbox, edits)).resolves.toBeUndefined();
+    expect(capturedEnvironment.LANDING_EDIT_BATCH).toBe(JSON.stringify(edits));
+    expect(capturedEnvironment).not.toHaveProperty("REPOSITORY_CHECKOUT_TOKEN");
+  });
+
   it("rejects ambiguous edit diagnostics without exposing credential-like values", async () => {
     const sandbox: RepositoryCheckoutSandbox = {
       exec: () =>
@@ -260,10 +314,10 @@ describe("repository workspace", () => {
         }),
     };
 
-    const failure = replaceRepositoryHeadline(
+    const failure = applyRepositoryEdits(
       sandbox,
       "src/domains/tacograph/pages/index.astro",
-      "Cook smarter",
+      [{ operation: "replace_headline", value: "Cook smarter" }],
     );
     await expect(failure).rejects.toThrow("[REDACTED]");
     await expect(failure).rejects.not.toThrow("should-not-escape");

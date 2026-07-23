@@ -1,4 +1,5 @@
 import type { ExecResult } from "@cloudflare/sandbox";
+import type { LandingEditOperation } from "../domain/landing-edits";
 
 export const REPOSITORY_WORKSPACE_PATH = "/workspace/repository";
 export const REPOSITORY_CHECKOUT_COMMAND =
@@ -6,14 +7,16 @@ export const REPOSITORY_CHECKOUT_COMMAND =
 export const REPOSITORY_INSTALL_COMMAND = "npm ci --no-audit --no-fund";
 export const REPOSITORY_CHECK_COMMAND = "npm run check";
 export const REPOSITORY_BUILD_COMMAND = "npm run build";
-export const REPOSITORY_HEADLINE_COMMAND =
-  "/usr/local/bin/apply-landing-headline";
+export const REPOSITORY_EDIT_COMMAND =
+  "/usr/local/bin/apply-landing-edits";
 export const REPOSITORY_TREE_COMMAND =
   "/usr/local/bin/snapshot-repository-tree";
 export const REPOSITORY_RESTORE_COMMAND =
   "/usr/local/bin/restore-repository-tree";
 export const REPOSITORY_PREVIEW_COMMAND =
   "./node_modules/.bin/astro preview --host 0.0.0.0 --port 4322";
+export const REPOSITORY_PREVIEW_VERIFY_COMMAND =
+  "/usr/local/bin/verify-repository-preview";
 
 const MAX_DIAGNOSTIC_LENGTH = 4_096;
 const VALIDATION_ENVIRONMENT = {
@@ -50,7 +53,7 @@ export interface RepositoryWorkspaceSandbox {
 export type RepositoryCheckoutSandbox = RepositoryWorkspaceSandbox;
 
 export type RepositoryValidationStep = "install" | "check" | "build";
-export type RepositoryEditOperation = "replace_headline";
+export type RepositoryEditOperation = LandingEditOperation["operation"];
 
 export interface RepositoryValidationResult {
   install: "passed";
@@ -200,25 +203,29 @@ export async function validateRepositoryChanges(
   };
 }
 
-export async function replaceRepositoryHeadline(
+export async function applyRepositoryEdits(
   sandbox: RepositoryWorkspaceSandbox,
   pagePath: string,
-  headline: string,
+  operations: readonly LandingEditOperation[],
 ): Promise<string> {
   assertRepositoryPagePath(pagePath);
   if (!pagePath.includes("/pages/") || !pagePath.endsWith(".astro")) {
-    throw new RepositoryEditError("Headline replacement requires a resolved Astro page source");
+    throw new RepositoryEditError("Landing edits require a resolved Astro page source");
   }
-  if (headline.trim() !== headline || headline.length === 0 || headline.length > 160) {
-    throw new RepositoryEditError("The replacement headline must contain 1 to 160 characters");
+  if (operations.length === 0 || operations.length > 8) {
+    throw new RepositoryEditError("A landing edit batch must contain 1 to 8 operations");
+  }
+  const serialized = JSON.stringify(operations);
+  if (serialized.length > 20_000) {
+    throw new RepositoryEditError("The landing edit batch is too large");
   }
 
-  const edit = await runRepositoryEditCommand(sandbox, REPOSITORY_HEADLINE_COMMAND, {
-    LANDING_HEADLINE: headline,
+  const edit = await runRepositoryEditCommand(sandbox, REPOSITORY_EDIT_COMMAND, {
+    LANDING_EDIT_BATCH: serialized,
     REPOSITORY_PAGE_PATH: pagePath,
   });
-  if (edit.stdout.trim() !== "headline_replaced") {
-    throw new RepositoryEditError("The headline edit did not complete safely");
+  if (edit.stdout.trim() !== "landing_edits_applied") {
+    throw new RepositoryEditError("The landing edit batch did not complete safely");
   }
   return snapshotRepositoryTree(sandbox, pagePath);
 }
@@ -267,6 +274,21 @@ export async function repositoryTreeRevision(
   return Array.from(new Uint8Array(digest), (byte) =>
     byte.toString(16).padStart(2, "0"),
   ).join("");
+}
+
+export async function verifyRepositoryPreview(
+  sandbox: RepositoryWorkspaceSandbox,
+  operations: readonly LandingEditOperation[],
+): Promise<void> {
+  const serialized = JSON.stringify(operations);
+  const result = await runRepositoryEditCommand(
+    sandbox,
+    REPOSITORY_PREVIEW_VERIFY_COMMAND,
+    { LANDING_EDIT_BATCH: serialized },
+  );
+  if (result.stdout.trim() !== "preview_verified") {
+    throw new RepositoryEditError("The rendered Astro route could not be verified");
+  }
 }
 
 async function runRepositoryEditCommand(

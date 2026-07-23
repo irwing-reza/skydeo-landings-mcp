@@ -50,6 +50,7 @@ export interface ManageLandingResult {
   draft_id: string | null;
   revision: string | null;
   change_summary: string;
+  change_operations: readonly string[];
   validation: ManageLandingValidation;
   preview_url: string | null;
   next_action: string;

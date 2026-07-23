@@ -68,6 +68,7 @@ describe("manage_landing contract", () => {
       draft_id: null,
       revision: null,
       change_summary: "No changes yet",
+      change_operations: [],
       validation: { status: "not_run", checks: [], summary: null },
       preview_url: null,
       next_action: "Identify the page and requested changes.",
@@ -108,7 +109,7 @@ describe("manage_landing contract", () => {
       draft_id: null,
       page: { name: "TacoGraph" },
     });
-    expect(result.next_action).toContain("change the headline to");
+    expect(result.next_action).toContain("quoted values");
   });
 
   it("extracts one bounded headline replacement", () => {
@@ -147,6 +148,7 @@ describe("manage_landing contract", () => {
       repositoryMutationResult("update_page", {
         draft,
         changeSummary: "Replaced the TacoGraph headline.",
+        operationNames: ["replace_headline"],
         validation: {
           status: "passed",
           checks: ["npm run check", "npm run build"],
@@ -157,6 +159,7 @@ describe("manage_landing contract", () => {
       state: "preview_ready",
       page: { name: "TacoGraph" },
       revision: "a".repeat(64),
+      change_operations: ["replace_headline"],
       validation: { status: "passed" },
     });
   });

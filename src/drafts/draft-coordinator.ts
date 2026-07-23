@@ -2,6 +2,11 @@ import { DurableObject } from "cloudflare:workers";
 import { getSandbox } from "@cloudflare/sandbox";
 
 import {
+  landingEditOperationNames,
+  summarizeLandingEdits,
+  type LandingEditOperation,
+} from "../domain/landing-edits";
+import {
   assertDraftTransition,
   isDraftStatus,
   isRepositoryWorkspaceStatus,
@@ -23,7 +28,7 @@ import {
   installAndValidateRepository,
   prepareRepositoryCheckout,
   REPOSITORY_PREVIEW_COMMAND,
-  replaceRepositoryHeadline,
+  applyRepositoryEdits,
   repositoryTreeRevision,
   repositoryWorkspaceConfig,
   RepositoryEditError,
@@ -31,6 +36,7 @@ import {
   restoreRepositoryTree,
   snapshotRepositoryTree,
   validateRepositoryChanges,
+  verifyRepositoryPreview,
 } from "../repository/workspace";
 
 interface DraftRow extends Record<string, SqlStorageValue> {
@@ -78,11 +84,11 @@ export interface UpdateDraftInput {
 export type CreateRepositoryDraftInput = Pick<
   DraftRecord,
   "id" | "organizationId" | "createdBy" | "hostname"
-> & { headline: string; pagePath: string; previewHostname: string };
+> & { edits: readonly LandingEditOperation[]; pagePath: string; previewHostname: string };
 
 export interface UpdateRepositoryDraftInput {
   expectedRevision: string;
-  headline: string;
+  edits: readonly LandingEditOperation[];
   organizationId: string;
   previewHostname: string;
 }
@@ -90,6 +96,7 @@ export interface UpdateRepositoryDraftInput {
 export interface RepositoryDraftMutationResult {
   draft: DraftRecord;
   changeSummary: string;
+  operationNames: readonly string[];
   validation: {
     status: "passed" | "failed";
     checks: readonly string[];
@@ -325,28 +332,31 @@ export class DraftCoordinator extends DurableObject<Env> {
         workspaceId,
       });
       this.transition("building");
-      const treeSha = await replaceRepositoryHeadline(
+      const treeSha = await applyRepositoryEdits(
         sandbox,
         input.pagePath,
-        input.headline,
+        input.edits,
       );
       const validation = await validateRepositoryChanges(sandbox);
       const revision = await repositoryTreeRevision(config.baseSha, treeSha);
-      const changeSummary = `Replaced the headline on ${input.hostname} with “${input.headline}”.`;
+      const changeSummary = summarizeLandingEdits(input.hostname, input.edits);
+      const operationNames = landingEditOperationNames(input.edits);
       const rendered = await this.renderRepositoryPreview(
         input.organizationId,
         input.previewHostname,
         revision,
         treeSha,
         changeSummary,
+        input.edits,
       );
       return {
         draft: rendered,
         changeSummary,
+        operationNames,
         validation: {
           status: "passed",
-          checks: validation.checks,
-          summary: "The canonical repository checks passed.",
+          checks: [...validation.checks, "rendered Astro route"],
+          summary: "The canonical repository checks and rendered route inspection passed.",
         },
       };
     } catch (error: unknown) {
@@ -380,6 +390,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       return {
         draft: failed,
         changeSummary: "No repository revision was created.",
+        operationNames: landingEditOperationNames(input.edits),
         validation: {
           status: "failed",
           checks: ["npm run check", "npm run build"],
@@ -437,28 +448,31 @@ export class DraftCoordinator extends DurableObject<Env> {
 
     this.transition("building");
     try {
-      const treeSha = await replaceRepositoryHeadline(
+      const treeSha = await applyRepositoryEdits(
         sandbox,
         draft.repositoryPagePath,
-        input.headline,
+        input.edits,
       );
       const validation = await validateRepositoryChanges(sandbox);
       const revision = await repositoryTreeRevision(draft.repositoryBaseSha, treeSha);
-      const changeSummary = `Replaced the headline on ${draft.hostname} with “${input.headline}”.`;
+      const changeSummary = summarizeLandingEdits(draft.hostname, input.edits);
+      const operationNames = landingEditOperationNames(input.edits);
       const rendered = await this.renderRepositoryPreview(
         input.organizationId,
         input.previewHostname,
         revision,
         treeSha,
         changeSummary,
+        input.edits,
       );
       return {
         draft: rendered,
         changeSummary,
+        operationNames,
         validation: {
           status: "passed",
-          checks: validation.checks,
-          summary: "The canonical repository checks passed.",
+          checks: [...validation.checks, "rendered Astro route"],
+          summary: "The canonical repository checks and rendered route inspection passed.",
         },
       };
     } catch (error: unknown) {
@@ -494,6 +508,7 @@ export class DraftCoordinator extends DurableObject<Env> {
         return {
           draft: failed,
           changeSummary: "No repository revision was saved and the workspace was retired.",
+          operationNames: landingEditOperationNames(input.edits),
           validation: {
             status: "failed",
             checks: ["npm run check", "npm run build"],
@@ -510,6 +525,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       return {
         draft: this.requireDraft(),
         changeSummary: "The requested edit was not saved; the previous revision remains active.",
+        operationNames: landingEditOperationNames(input.edits),
         validation: {
           status: "failed",
           checks: ["npm run check", "npm run build"],
@@ -714,6 +730,7 @@ export class DraftCoordinator extends DurableObject<Env> {
     revision: string,
     treeSha: string,
     changeSummary: string,
+    operations: readonly LandingEditOperation[],
   ): Promise<DraftRecord> {
     const draft = this.requireOrganization(organizationId);
     if (draft.status !== "building" || draft.repositoryWorkspaceId === null) {
@@ -748,6 +765,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       status: 204,
       timeout: 30_000,
     });
+    await verifyRepositoryPreview(sandbox, operations);
 
     const exposed = await sandbox.exposePort(PREVIEW_PORT, {
       hostname: previewHostname,
@@ -759,7 +777,7 @@ export class DraftCoordinator extends DurableObject<Env> {
     this.ctx.storage.sql.exec(
       `UPDATE draft
        SET status = 'preview_ready', current_revision = ?, preview_url = ?,
-           repository_tree_sha = ?, repository_change_operation = 'replace_headline',
+           repository_tree_sha = ?, repository_change_operation = ?,
            repository_change_summary = ?, preview_expires_at = ?,
            preview_revoked_at = NULL, preview_cleanup_status = 'scheduled',
            preview_cleaned_at = NULL, updated_at = ?
@@ -767,6 +785,7 @@ export class DraftCoordinator extends DurableObject<Env> {
       revision,
       previewUrl,
       treeSha,
+      JSON.stringify(operations),
       changeSummary,
       previewExpiresAt,
       now,

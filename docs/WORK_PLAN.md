@@ -33,9 +33,9 @@ The intended public MCP boundary is:
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
 | Production lifecycle verification | Conditionally authorized | Run one disposable test only after repository-backed cleanup and preflight checks are complete |
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
-| Unified landing workflow | In progress | `manage_landing` now connects one bounded existing-page headline update and later headline revisions to repository-backed drafts; create, other edit types, and publish remain closed |
-| Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, Astro rendering, and cleanup are connected for headline updates |
-| Structured editing | In progress | `replace_headline` is implemented with a single-page source boundary; copy, CTA, SEO, image, and layout operations remain planned |
+| Unified landing workflow | In progress | `manage_landing` composes bounded existing-page headline, hero copy, CTA, SEO, image, and section-order updates in repository-backed drafts; create and publish remain closed |
+| Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, rendered-route inspection, and cleanup are connected for bounded edit batches |
+| Structured editing | In progress | The initial operation set is implemented with static-target and single-page boundaries; broader layout/source transformations remain closed |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
 
@@ -167,7 +167,7 @@ Acceptance criteria:
 
 ## Milestone 4: Create repository-backed draft workspaces
 
-**Status: Connected for bounded existing-page headline updates**
+**Status: Connected for bounded existing-page edit batches**
 
 - [x] Create one stable Sandbox per draft.
 - [x] Clone or fetch the configured canonical repository.
@@ -191,15 +191,15 @@ minimal non-secret environment. Failed command output is redacted and bounded
 before it can reach durable events or callers, and every checkout, install, or
 validation failure enters the same immediate destruction and alarm-retry path.
 `manage_landing` now exposes the repository workspace only for a resolved,
-unambiguous `replace_headline` operation. The fixed edit command accepts the page
-path and headline through an invocation-scoped environment, rejects dynamic or
-multi-region `h1` markup, and verifies that only the resolved Astro source file
+unambiguous structured edit batch. The fixed edit command accepts the page path
+and typed operations through an invocation-scoped environment, rejects dynamic
+or multi-region targets, and verifies that only the resolved Astro source file
 changed. Git's native tree object ID is persisted, while the public 64-character
 revision is a deterministic SHA-256 digest of the base commit and tree ID. Later
-headline revisions verify both the expected public revision and the persisted
-tree before reusing the same workspace. Failed revisions restore the last valid
-tree; if restoration cannot be verified, the workspace is retired through the
-same destruction and alarm-retry path.
+revisions verify both the expected public revision and the persisted tree before
+reusing the same workspace. Failed revisions restore the last valid tree; if
+restoration cannot be verified, the workspace is retired through the same
+destruction and alarm-retry path.
 
 Acceptance criteria:
 
@@ -234,7 +234,7 @@ Acceptance criteria:
 
 ## Milestone 6: Implement the existing-page update branch
 
-**Status: First operation implemented**
+**Status: Initial bounded operation set implemented**
 
 For a vague request such as “I want to update the TacoGraph page”:
 
@@ -255,16 +255,33 @@ Acceptance criteria:
 
 ## Milestone 7: Add internal structured editing operations
 
-**Status: In progress; first operation implemented**
+**Status: In progress; initial bounded operation set implemented**
 
 Initial internal operations:
 
 - [x] `replace_headline`
-- `update_copy`
-- `update_cta`
-- `update_seo_metadata`
-- `replace_image`
-- `apply_page_change` for bounded layout or source changes
+- [x] `update_copy` for one marked or unambiguous hero paragraph
+- [x] `update_cta` for one marked or unambiguous hero link
+- [x] `update_seo_metadata` for static title and description targets
+- [x] `replace_image` for one marked or unambiguous hero image
+- [x] `apply_page_change` for ordering two explicitly identified sections
+
+The deterministic request grammar uses quoted values so several fields can be
+composed without guessing where one value ends. For example:
+
+```text
+Update TacoGraph: headline to "Cook smarter"; hero copy to "Plan every service";
+CTA label to "Start free"; CTA URL to "/signup"; SEO title to "TacoGraph planning";
+image source to "/images/hero.webp"; image alt to "TacoGraph dashboard"
+```
+
+Static `data-landing-role="body-copy"`, `data-landing-role="cta"`, and
+`data-landing-role="image"` markers take precedence. Without markers, the
+operation proceeds only when the `h1` container has exactly one compatible
+target. Layout edits accept only `move section "a" before|after section "b"`
+where both sections have a unique `id` or `data-section`. Arbitrary patches,
+component edits, deployment files, scripts, styles, and routing changes remain
+outside this operation.
 
 Each operation must target a resolved page and known section, preserve unrelated
 source, validate the expected revision, and produce a structured change record.
@@ -280,7 +297,7 @@ Acceptance criteria:
 
 ## Milestone 8: Complete the validate, preview, and revise loop
 
-**Status: Planned**
+**Status: Implemented for bounded existing-page edit batches**
 
 After each edit batch:
 
@@ -288,7 +305,7 @@ After each edit batch:
 2. run `npm run check`;
 3. run `npm run build`;
 4. start or reuse the Astro preview;
-5. inspect the affected route;
+5. inspect the affected route and confirm every requested value rendered;
 6. persist an immutable revision; and
 7. return the preview and change summary.
 
@@ -414,7 +431,7 @@ Acceptance criteria:
 
 1. Exercise the conditionally authorized disposable production lifecycle test
    only after its new read-only repository-workspace preflight passes.
-2. Add the next bounded existing-page operation, preserving tree verification
-   and rollback behavior.
-3. Keep `manage_landing` create, unsupported edit, and publish-request branches
+2. Verify the operation targets against real canonical pages and add explicit
+   `data-landing-role` markers where existing markup is otherwise ambiguous.
+3. Keep `manage_landing` create, unbounded source-edit, and publish-request branches
    fail closed until their corresponding durable workflow operations exist.
