@@ -10,7 +10,6 @@ import {
 import {
   inspectLandingDraft,
   planInitialLandingRequest,
-  repositoryMutationResult,
   unavailableDraftOperation,
 } from "../domain/manage-landing";
 import {
@@ -20,6 +19,7 @@ import { parseLandingEditBatch } from "../domain/landing-edits";
 import { resolvePageUpdateRequest } from "../domain/page-request";
 import type { ManageLandingRequest, ManageLandingResult } from "../domain/landing-workflow";
 import { previewLifecycleState } from "../domain/preview-lifecycle";
+import { repositoryDraftId } from "../domain/repository-execution";
 import { draftObjectName } from "../drafts/draft-object-name";
 import { LOCAL_CANDIDATE_LANDING_SNAPSHOT } from "../repository/page-catalog";
 
@@ -51,6 +51,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
           request: z.string().trim().min(1).max(10_000),
           draft_id: z.uuid().optional(),
           expected_revision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+          idempotency_key: z.string().trim().min(8).max(200).optional(),
         },
       },
       async (input) => {
@@ -60,12 +61,33 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
           ...(input.expected_revision === undefined
             ? {}
             : { expected_revision: input.expected_revision }),
+          ...(input.idempotency_key === undefined
+            ? {}
+            : { idempotency_key: input.idempotency_key }),
         };
         const intent = classifyLandingIntent(request);
         const auth = this.requirePermission(permissionForLandingIntent(intent));
 
         try {
           if (input.draft_id === undefined) {
+            let idempotentId: string | null = null;
+            if (input.idempotency_key !== undefined) {
+              idempotentId = await repositoryDraftId(
+                auth.organizationId,
+                auth.claims.sub,
+                input.idempotency_key,
+              );
+              try {
+                const recovered = await this.env.DRAFTS.getByName(
+                  draftObjectName(auth.organizationId, idempotentId),
+                ).get(auth.organizationId);
+                return workflowResult(inspectLandingDraft(recovered, intent));
+              } catch (error: unknown) {
+                if (!(error instanceof Error) || error.message !== "Draft does not exist") {
+                  throw error;
+                }
+              }
+            }
             if (intent === "update_page") {
               const update = resolvePageUpdateRequest(
                 request.request,
@@ -77,19 +99,24 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 update.actionable &&
                 editBatch.status === "parsed"
               ) {
-                const id = crypto.randomUUID();
-                const mutation = await this.env.DRAFTS.getByName(
-                  draftObjectName(auth.organizationId, id),
+                if (input.idempotency_key === undefined || idempotentId === null) {
+                  throw new Error(
+                    "idempotency_key is required for an initial repository mutation",
+                  );
+                }
+                const draft = await this.env.DRAFTS.getByName(
+                  draftObjectName(auth.organizationId, idempotentId),
                 ).createRepositoryDraft({
                   createdBy: auth.claims.sub,
                   edits: editBatch.operations,
                   hostname: update.resolution.page.hostname,
-                  id,
+                  id: idempotentId,
+                  idempotencyKey: input.idempotency_key,
                   organizationId: auth.organizationId,
                   pagePath: update.resolution.page.source_path,
                   previewHostname: this.env.PREVIEW_HOSTNAME,
                 });
-                return workflowResult(repositoryMutationResult(intent, mutation));
+                return workflowResult(inspectLandingDraft(draft, intent));
               }
             }
             return workflowResult(
@@ -122,13 +149,14 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
                 revision: draft.currentRevision,
                 change_summary: "No repository change was applied.",
                 change_operations: [],
+                execution_phase: draft.repositoryOperationPhase,
                 validation: { status: "not_run", checks: [], summary: null },
                 preview_url: inspectLandingDraft(draft).preview_url,
                 next_action:
                   editBatch.message,
               });
             }
-            const mutation = await this.env.DRAFTS.getByName(
+            const queued = await this.env.DRAFTS.getByName(
               draftObjectName(auth.organizationId, input.draft_id),
             ).updateRepositoryDraft({
               expectedRevision: input.expected_revision,
@@ -136,7 +164,7 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
               organizationId: auth.organizationId,
               previewHostname: this.env.PREVIEW_HOSTNAME,
             });
-            return workflowResult(repositoryMutationResult(intent, mutation));
+            return workflowResult(inspectLandingDraft(queued, intent));
           }
           if (
             input.expected_revision !== undefined &&
@@ -191,6 +219,9 @@ export class LandingMcp extends McpAgent<Env, Record<string, never>, AuthContext
             manageLanding: true,
             repositoryBackedEditing: true,
             repositoryWorkspaceCleanup: true,
+            asynchronousRepositoryExecution: true,
+            initialMutationIdempotency: true,
+            durableRepositoryPolling: true,
             supportedRepositoryEdits: [
               "replace_headline",
               "update_copy",
@@ -364,6 +395,10 @@ function toPublicDraft(draft: DraftRecord) {
     revoked_at:
       draft.previewRevokedAt === null ? null : new Date(draft.previewRevokedAt).toISOString(),
     cleanup_status: draft.previewCleanupStatus,
+    repository_operation_status: draft.repositoryOperationStatus,
+    repository_operation_phase: draft.repositoryOperationPhase,
+    repository_operation_error: draft.repositoryOperationError,
+    repository_operation_attempt: draft.repositoryOperationAttempt,
     cleaned_up_at:
       draft.previewCleanedAt === null ? null : new Date(draft.previewCleanedAt).toISOString(),
     production_url: null,

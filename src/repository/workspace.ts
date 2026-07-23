@@ -53,6 +53,9 @@ export interface RepositoryWorkspaceSandbox {
 export type RepositoryCheckoutSandbox = RepositoryWorkspaceSandbox;
 
 export type RepositoryValidationStep = "install" | "check" | "build";
+export type RepositoryValidationStepObserver = (
+  step: RepositoryValidationStep,
+) => void;
 export type RepositoryEditOperation = LandingEditOperation["operation"];
 
 export interface RepositoryValidationResult {
@@ -155,19 +158,23 @@ export async function prepareRepositoryCheckout(
 
 export async function installAndValidateRepository(
   sandbox: RepositoryWorkspaceSandbox,
+  observeStep: RepositoryValidationStepObserver = () => undefined,
 ): Promise<RepositoryValidationResult> {
+  observeStep("install");
   await runRepositoryValidationStep(
     sandbox,
     "install",
     REPOSITORY_INSTALL_COMMAND,
     300_000,
   );
+  observeStep("check");
   await runRepositoryValidationStep(
     sandbox,
     "check",
     REPOSITORY_CHECK_COMMAND,
     300_000,
   );
+  observeStep("build");
   await runRepositoryValidationStep(
     sandbox,
     "build",
@@ -183,13 +190,16 @@ export async function installAndValidateRepository(
 
 export async function validateRepositoryChanges(
   sandbox: RepositoryWorkspaceSandbox,
+  observeStep: RepositoryValidationStepObserver = () => undefined,
 ): Promise<RepositoryValidationResult> {
+  observeStep("check");
   await runRepositoryValidationStep(
     sandbox,
     "check",
     REPOSITORY_CHECK_COMMAND,
     300_000,
   );
+  observeStep("build");
   await runRepositoryValidationStep(
     sandbox,
     "build",

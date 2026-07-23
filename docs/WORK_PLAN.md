@@ -31,11 +31,11 @@ The intended public MCP boundary is:
 | Protected previews | Complete | Access assertion and lifecycle checks before proxying |
 | Preview lifecycle | Complete | TTL, revoke, alarms, cleanup, structured events |
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
-| Production lifecycle verification | Preflight passed; execution blocked | The authorized repository preflight passed, but two composed-edit calls exceeded the MCP client's 120-second tool deadline before returning a draft ID |
+| Production lifecycle verification | Preflight passed; async retest pending | The authorized repository preflight passed; the synchronous timeout was addressed locally, but no new production repository draft should be created until this slice is deployed |
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
-| Unified landing workflow | In progress | `manage_landing` composes bounded existing-page edits, but its synchronous repository path exceeds the production MCP tool deadline; create and publish remain closed |
+| Unified landing workflow | In progress | `manage_landing` composes bounded existing-page edits; the asynchronous replacement for the timed-out production path is implemented locally, while create and publish remain closed |
 | Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, rendered-route inspection, and cleanup are connected for bounded edit batches |
-| Asynchronous repository execution | Planned; immediate priority | Return a durable draft ID before checkout and validation, continue independently, expose polling and recovery, and make retries idempotent |
+| Asynchronous repository execution | Implemented locally; production retest pending | Initial mutations use actor-scoped idempotent draft IDs, persist queued work before Sandbox access, continue by alarm, expose polling, and share lifecycle cleanup |
 | Structured editing | In progress | The initial operation set is implemented with static-target and single-page boundaries; broader layout/source transformations remain closed |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
@@ -298,7 +298,7 @@ Acceptance criteria:
 
 ## Milestone 8: Complete the validate, preview, and revise loop
 
-**Status: Internally implemented for bounded edit batches; production response timing blocks the public loop**
+**Status: Durable asynchronous execution implemented locally; production retest pending**
 
 After each edit batch:
 
@@ -327,22 +327,71 @@ called. The production end-to-end test is therefore **not passed**.
 
 The next implementation slice must make repository work durable and asynchronous:
 
-- [ ] Accept an idempotency key for each initial mutation request.
-- [ ] Create and persist the draft record, schedule cleanup, and return its
+- [x] Accept an idempotency key for each initial mutation request.
+- [x] Create and persist the draft record, schedule cleanup, and return its
       `draft_id` and `preparing_workspace` state before slow repository work starts.
-- [ ] Continue checkout, install, edits, validation, build, rendered-route
+- [x] Continue checkout, install, edits, validation, build, rendered-route
       inspection, and preview startup independently of the initiating MCP request.
-- [ ] Let `manage_landing` and/or `get_draft` poll durable progress through
+- [x] Let `manage_landing` and/or `get_draft` poll durable progress through
       `preparing_workspace`, `editing`, `validation_failed`, `preview_ready`, and
       `failed` without starting duplicate work.
-- [ ] Make repeated requests with the same actor, organization, and idempotency key
+- [x] Make repeated requests with the same actor, organization, and idempotency key
       resolve to the same draft and operation result.
-- [ ] Add a bounded recovery lookup for a request whose transport disconnected
+- [x] Add a bounded recovery lookup for a request whose transport disconnected
       before its draft ID reached the caller.
-- [ ] Define cancellation and timeout behavior so every allocated workspace is
+- [x] Define cancellation and timeout behavior so every allocated workspace is
       either retained behind an active draft lifecycle or destroyed and audited.
-- [ ] Verify retries, disconnects, Worker restarts, alarm cleanup, and failure
+- [x] Verify deterministic retry/recovery and restart-safe persisted phases with
+      unit coverage; update the container-backed repository smoke to require a
+      prompt initiating response, idempotent recovery, durable polling, terminal
+      observation, and cleanup.
+- [ ] Run the updated container-backed smoke and verify disconnects, Worker restarts,
+      alarm cleanup, and failure
       destruction with unit, container-backed, and production smoke tests.
+
+The initiating `manage_landing` request now requires an 8-200 character
+`idempotency_key` for an actionable initial repository mutation. A SHA-256-derived,
+UUID-shaped draft ID is scoped to organization and actor, so retry and recovery
+route to the same Durable Object without a global index. The object atomically
+persists the immutable repository boundary, workspace ID, bounded edit batch,
+operation deadline, and `queued` status before setting its alarm and returning.
+No checkout, install, validation, build, or preview call occurs on that request.
+
+The alarm transitions through durable `running` state, re-enters safely after an
+eviction, and records terminal `succeeded`, `validation_failed`, `failed`, or
+`cancelled` outcomes. An interrupted initial attempt destroys and recreates its
+disposable workspace before retrying; an interrupted revision restores the last
+persisted tree before applying its batch. Each command retains its existing fixed
+timeout and the overall operation has a 30-minute durable deadline. Revocation or
+expiry marks active work cancelled and routes workspace destruction through the
+same idempotent cleanup alarm. Initial failures destroy the workspace; revision
+failures expose redacted diagnostics and retain the last valid revision only when
+its tree restoration verifies successfully.
+
+Additional Container evidence from deployment `d0390dd3…` showed workspace
+`sandbox-skydeo-1e21bb7fb4894db8bc69c2ce27982724` reaching `command.exec` for
+the canonical `npm run check` and failing with `Command timeout after 300000ms`.
+The Container reported `durationMs: 464993`; that excess wall time is treated as
+timeout/termination latency, not successful check execution. At pinned SHA
+`010829fa4235fb312e6706d0c8a050c2f8084499`, the repository's check script is
+`astro check`. Checkout and `npm ci` therefore progressed far enough that the
+read-only checkout token is not the current blocker.
+
+The implementation deliberately retains `npm run check` and its 300-second
+command timeout. Raising the timeout without evidence would hide the observed
+failure mode. Durable polling now includes `execution_phase` with one of
+`checkout`, `install`, `check`, `build`, or `preview`; a check transport timeout
+is persisted as a bounded, redacted failure diagnostic, and an initial failure
+destroys the Sandbox or schedules cleanup retry. The likely causes still to
+distinguish are resource pressure on the configured `lite` Container versus a
+repository-specific `astro check` stall. The next authorized run should
+correlate phase timestamps and Container resource/command logs before changing
+command budgets or instance sizing.
+
+Before another production mutation, verify the prior failed workspace emitted
+`repository_workspace_failed` or `repository_operation_failed` together with
+`sandbox_destroyed` or `preview_cleaned_up`; if destruction failed, require
+`sandbox_destroy_failed` or `preview_cleanup_failed` followed by an alarm retry.
 
 Asynchronous acceptance criteria:
 
@@ -472,8 +521,8 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Implement the Milestone 8 asynchronous start, polling, idempotency, recovery,
-   and timeout-cleanup slice before creating another production repository draft.
+1. Deploy the Milestone 8 asynchronous start, polling, idempotency, recovery, and
+   timeout-cleanup slice before creating another production repository draft.
 2. Repeat the authorized disposable production lifecycle test only after the
    read-only preflight passes and the initiating call returns a durable draft ID
    within the MCP deadline; then verify preview contents, persisted revision,

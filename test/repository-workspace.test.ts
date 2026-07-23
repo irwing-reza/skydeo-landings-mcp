@@ -184,6 +184,26 @@ describe("repository workspace", () => {
     expect(commands).toEqual([REPOSITORY_INSTALL_COMMAND, REPOSITORY_CHECK_COMMAND]);
   });
 
+  it("reports the canonical check phase before a Sandbox timeout", async () => {
+    const phases: string[] = [];
+    const sandbox: RepositoryCheckoutSandbox = {
+      exec(command) {
+        if (command === REPOSITORY_CHECK_COMMAND) {
+          return Promise.reject(new Error("Command timeout after 300000ms"));
+        }
+        return Promise.resolve({ exitCode: 0, stderr: "", stdout: "ok", success: true });
+      },
+    };
+
+    const failure = installAndValidateRepository(sandbox, (phase) => {
+      phases.push(phase);
+    });
+    await expect(failure).rejects.toMatchObject({ exitCode: null, step: "check" });
+    await expect(failure).rejects.toThrow("Sandbox command failed");
+    await expect(failure).rejects.not.toThrow("Command timeout after 300000ms");
+    expect(phases).toEqual(["install", "check"]);
+  });
+
   it("redacts credential URLs and caps diagnostics", () => {
     const diagnostic = boundedRedactedDiagnostic(
       `fetch https://user:credential@example.com/repository\nAuthorization: Bearer abcdef\n` +

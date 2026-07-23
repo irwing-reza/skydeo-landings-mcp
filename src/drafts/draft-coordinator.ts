@@ -1,11 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { getSandbox } from "@cloudflare/sandbox";
 
-import {
-  landingEditOperationNames,
-  summarizeLandingEdits,
-  type LandingEditOperation,
-} from "../domain/landing-edits";
+import { summarizeLandingEdits, type LandingEditOperation } from "../domain/landing-edits";
 import {
   assertDraftTransition,
   isDraftStatus,
@@ -13,6 +9,13 @@ import {
   type DraftRecord,
   type DraftStatus,
 } from "../domain/draft";
+import {
+  isRepositoryOperationStatus,
+  isRepositoryOperationPhase,
+  repositoryResumeStrategy,
+  type RepositoryOperationPhase,
+  type RepositoryOperationStatus,
+} from "../domain/repository-execution";
 import {
   isPreviewCleanupStatus,
   previewLifecycleState,
@@ -34,7 +37,6 @@ import {
   RepositoryEditError,
   RepositoryValidationError,
   restoreRepositoryTree,
-  snapshotRepositoryTree,
   validateRepositoryChanges,
   verifyRepositoryPreview,
 } from "../repository/workspace";
@@ -61,6 +63,12 @@ interface DraftRow extends Record<string, SqlStorageValue> {
   repository_tree_sha: string | null;
   repository_change_operation: string | null;
   repository_change_summary: string | null;
+  repository_operation_status: string | null;
+  repository_operation_phase: string | null;
+  repository_operation_error: string | null;
+  repository_operation_deadline_at: number | null;
+  repository_operation_attempt: number;
+  repository_idempotency_key: string | null;
   preview_expires_at: number | null;
   preview_revoked_at: number | null;
   preview_cleanup_status: string;
@@ -84,24 +92,18 @@ export interface UpdateDraftInput {
 export type CreateRepositoryDraftInput = Pick<
   DraftRecord,
   "id" | "organizationId" | "createdBy" | "hostname"
-> & { edits: readonly LandingEditOperation[]; pagePath: string; previewHostname: string };
+> & {
+  edits: readonly LandingEditOperation[];
+  idempotencyKey: string;
+  pagePath: string;
+  previewHostname: string;
+};
 
 export interface UpdateRepositoryDraftInput {
   expectedRevision: string;
   edits: readonly LandingEditOperation[];
   organizationId: string;
   previewHostname: string;
-}
-
-export interface RepositoryDraftMutationResult {
-  draft: DraftRecord;
-  changeSummary: string;
-  operationNames: readonly string[];
-  validation: {
-    status: "passed" | "failed";
-    checks: readonly string[];
-    summary: string | null;
-  };
 }
 
 export interface PreviewAuthorization {
@@ -114,6 +116,7 @@ const PREVIEW_PROCESS_ID = "preview-server";
 const REPOSITORY_PREVIEW_PROCESS_ID = "repository-preview-server";
 const REPOSITORY_PREVIEW_PROXY_PROCESS_ID = "repository-preview-proxy";
 const CLEANUP_RETRY_DELAY_MS = 5 * 60 * 1000;
+const REPOSITORY_OPERATION_TIMEOUT_MS = 30 * 60 * 1000;
 const PREVIEW_SERVER_SOURCE = `
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -175,6 +178,12 @@ export class DraftCoordinator extends DurableObject<Env> {
           repository_tree_sha TEXT,
           repository_change_operation TEXT,
           repository_change_summary TEXT,
+          repository_operation_status TEXT,
+          repository_operation_phase TEXT,
+          repository_operation_error TEXT,
+          repository_operation_deadline_at INTEGER,
+          repository_operation_attempt INTEGER NOT NULL DEFAULT 0,
+          repository_idempotency_key TEXT,
           preview_expires_at INTEGER,
           preview_revoked_at INTEGER,
           preview_cleanup_status TEXT NOT NULL DEFAULT 'scheduled',
@@ -197,6 +206,16 @@ export class DraftCoordinator extends DurableObject<Env> {
       this.ensureColumn(columns, "repository_tree_sha", "TEXT");
       this.ensureColumn(columns, "repository_change_operation", "TEXT");
       this.ensureColumn(columns, "repository_change_summary", "TEXT");
+      this.ensureColumn(columns, "repository_operation_status", "TEXT");
+      this.ensureColumn(columns, "repository_operation_phase", "TEXT");
+      this.ensureColumn(columns, "repository_operation_error", "TEXT");
+      this.ensureColumn(columns, "repository_operation_deadline_at", "INTEGER");
+      this.ensureColumn(
+        columns,
+        "repository_operation_attempt",
+        "INTEGER NOT NULL DEFAULT 0",
+      );
+      this.ensureColumn(columns, "repository_idempotency_key", "TEXT");
       this.ensureColumn(columns, "preview_expires_at", "INTEGER");
       this.ensureColumn(columns, "preview_revoked_at", "INTEGER");
       this.ensureColumn(
@@ -259,15 +278,27 @@ export class DraftCoordinator extends DurableObject<Env> {
 
   async get(organizationId: string): Promise<DraftRecord> {
     const draft = this.requireOrganization(organizationId);
-    await this.ensureCleanupAlarm(draft);
+    await this.ensureNextAlarm(draft);
     return draft;
   }
 
   async createRepositoryDraft(
     input: CreateRepositoryDraftInput,
-  ): Promise<RepositoryDraftMutationResult> {
-    if (this.readDraft() !== null) {
-      throw new Error("Draft already exists");
+  ): Promise<DraftRecord> {
+    const existing = this.readDraft();
+    if (existing !== null) {
+      if (
+        existing.organizationId === input.organizationId &&
+        existing.createdBy === input.createdBy &&
+        existing.repositoryIdempotencyKey === input.idempotencyKey &&
+        existing.hostname === input.hostname &&
+        existing.repositoryPagePath === input.pagePath &&
+        existing.repositoryChangeOperation === JSON.stringify(input.edits)
+      ) {
+        await this.ensureNextAlarm(existing);
+        return existing;
+      }
+      throw new Error("The idempotency key is already bound to a different request");
     }
 
     const config = repositoryWorkspaceConfig(this.env);
@@ -282,10 +313,15 @@ export class DraftCoordinator extends DurableObject<Env> {
         repository_remote_url, repository_release_ref, repository_base_sha,
         repository_page_path, repository_workspace_id, repository_workspace_status,
         repository_prepared_at, repository_tree_sha, repository_change_operation,
-        repository_change_summary, preview_expires_at, preview_revoked_at,
+        repository_change_summary, repository_operation_status,
+        repository_operation_phase, repository_operation_error,
+        repository_operation_deadline_at,
+        repository_operation_attempt, repository_idempotency_key,
+        preview_expires_at, preview_revoked_at,
         preview_cleanup_status, preview_cleaned_at, created_at, updated_at
       ) VALUES (?, ?, ?, ?, 'draft', ?, ?, NULL, NULL, NULL, '', ?, ?, ?, ?, ?,
-        'preparing', NULL, NULL, NULL, NULL, ?, NULL, 'scheduled', NULL, ?, ?)`,
+        'preparing', NULL, NULL, ?, ?, 'queued', NULL, NULL, ?, 0, ?, ?, NULL,
+        'scheduled', NULL, ?, ?)`,
       input.id,
       input.organizationId,
       input.createdBy,
@@ -297,115 +333,22 @@ export class DraftCoordinator extends DurableObject<Env> {
       config.baseSha,
       input.pagePath,
       workspaceId,
+      JSON.stringify(input.edits),
+      "Repository workspace preparation is queued.",
+      now + REPOSITORY_OPERATION_TIMEOUT_MS,
+      input.idempotencyKey,
       previewExpiresAt,
       now,
       now,
     );
-    this.logEvent("repository_workspace_preparing", { workspaceId });
-
-    const sandbox = getSandbox(this.env.Sandbox, workspaceId, {
-      labels: { draftId: input.id, organizationId: input.organizationId },
-      normalizeId: true,
-    });
-
-    try {
-      await prepareRepositoryCheckout(
-        sandbox,
-        config,
-        this.env.REPOSITORY_CHECKOUT_TOKEN,
-      );
-      await installAndValidateRepository(sandbox);
-      const preparedAt = Date.now();
-      this.ctx.storage.sql.exec(
-        `UPDATE draft
-         SET repository_workspace_status = 'ready', repository_prepared_at = ?,
-             updated_at = ?
-         WHERE id = ?`,
-        preparedAt,
-        preparedAt,
-        input.id,
-      );
-      const draft = this.requireDraft();
-      await this.ensureCleanupAlarm(draft);
-      this.logEvent("repository_workspace_ready", {
-        revision: config.baseSha,
-        workspaceId,
-      });
-      this.transition("building");
-      const treeSha = await applyRepositoryEdits(
-        sandbox,
-        input.pagePath,
-        input.edits,
-      );
-      const validation = await validateRepositoryChanges(sandbox);
-      const revision = await repositoryTreeRevision(config.baseSha, treeSha);
-      const changeSummary = summarizeLandingEdits(input.hostname, input.edits);
-      const operationNames = landingEditOperationNames(input.edits);
-      const rendered = await this.renderRepositoryPreview(
-        input.organizationId,
-        input.previewHostname,
-        revision,
-        treeSha,
-        changeSummary,
-        input.edits,
-      );
-      return {
-        draft: rendered,
-        changeSummary,
-        operationNames,
-        validation: {
-          status: "passed",
-          checks: [...validation.checks, "rendered Astro route"],
-          summary: "The canonical repository checks and rendered route inspection passed.",
-        },
-      };
-    } catch (error: unknown) {
-      let cleanupComplete = false;
-      try {
-        await sandbox.destroy();
-        cleanupComplete = true;
-      } catch {
-        // The persisted failed cleanup state schedules an alarm retry.
-      }
-      const failedAt = Date.now();
-      this.ctx.storage.sql.exec(
-        `UPDATE draft
-         SET status = 'failed', repository_workspace_status = 'failed',
-             preview_expires_at = ?, preview_cleanup_status = ?,
-             preview_cleaned_at = ?, updated_at = ?
-         WHERE id = ?`,
-        failedAt,
-        cleanupComplete ? "complete" : "failed",
-        cleanupComplete ? failedAt : null,
-        failedAt,
-        input.id,
-      );
-      const failed = this.requireDraft();
-      await this.ensureCleanupAlarm(failed);
-      this.logEvent("repository_workspace_failed", {
-        cleanupComplete: cleanupComplete ? 1 : 0,
-        error: error instanceof Error ? error.message : "Unknown checkout failure",
-        workspaceId,
-      });
-      return {
-        draft: failed,
-        changeSummary: "No repository revision was created.",
-        operationNames: landingEditOperationNames(input.edits),
-        validation: {
-          status: "failed",
-          checks: ["npm run check", "npm run build"],
-          summary:
-            error instanceof RepositoryValidationError || error instanceof RepositoryEditError
-              ? error.message
-              : "Repository workspace preparation failed; the disposable workspace was destroyed.",
-        },
-      };
-    }
+    this.logEvent("repository_operation_queued", { workspaceId });
+    await this.ctx.storage.setAlarm(now);
+    return this.requireDraft();
   }
 
   async updateRepositoryDraft(
     input: UpdateRepositoryDraftInput,
-  ): Promise<RepositoryDraftMutationResult> {
+  ): Promise<DraftRecord> {
     const draft = this.requireOrganization(input.organizationId);
     if (draft.currentRevision !== input.expectedRevision) {
       throw new Error(
@@ -421,6 +364,12 @@ export class DraftCoordinator extends DurableObject<Env> {
     ) {
       throw new Error("This draft does not have a reusable repository workspace");
     }
+    if (
+      draft.repositoryOperationStatus === "queued" ||
+      draft.repositoryOperationStatus === "running"
+    ) {
+      throw new Error("A repository operation is already in progress for this draft");
+    }
     if (previewLifecycleState(draft) !== "active") {
       throw new Error("The repository workspace is expired or revoked; start a new update");
     }
@@ -433,109 +382,27 @@ export class DraftCoordinator extends DurableObject<Env> {
     ) {
       throw new Error("The configured repository boundary no longer matches this draft");
     }
-    const sandbox = getSandbox(this.env.Sandbox, draft.repositoryWorkspaceId, {
-      labels: { draftId: draft.id, organizationId: draft.organizationId },
-      normalizeId: true,
-    });
-    await prepareRepositoryCheckout(sandbox, config, this.env.REPOSITORY_CHECKOUT_TOKEN);
-    const actualTreeSha = await snapshotRepositoryTree(
-      sandbox,
-      draft.repositoryPagePath,
-    );
-    if (actualTreeSha !== draft.repositoryTreeSha) {
-      throw new Error("The repository workspace does not match the stored draft revision");
-    }
-
     this.transition("building");
-    try {
-      const treeSha = await applyRepositoryEdits(
-        sandbox,
-        draft.repositoryPagePath,
-        input.edits,
-      );
-      const validation = await validateRepositoryChanges(sandbox);
-      const revision = await repositoryTreeRevision(draft.repositoryBaseSha, treeSha);
-      const changeSummary = summarizeLandingEdits(draft.hostname, input.edits);
-      const operationNames = landingEditOperationNames(input.edits);
-      const rendered = await this.renderRepositoryPreview(
-        input.organizationId,
-        input.previewHostname,
-        revision,
-        treeSha,
-        changeSummary,
-        input.edits,
-      );
-      return {
-        draft: rendered,
-        changeSummary,
-        operationNames,
-        validation: {
-          status: "passed",
-          checks: [...validation.checks, "rendered Astro route"],
-          summary: "The canonical repository checks and rendered route inspection passed.",
-        },
-      };
-    } catch (error: unknown) {
-      try {
-        await restoreRepositoryTree(
-          sandbox,
-          draft.repositoryPagePath,
-          draft.repositoryTreeSha,
-        );
-      } catch {
-        let cleanupComplete = false;
-        try {
-          await sandbox.destroy();
-          cleanupComplete = true;
-        } catch {
-          // Failed destruction is retried by the existing cleanup alarm.
-        }
-        const failedAt = Date.now();
-        this.ctx.storage.sql.exec(
-          `UPDATE draft
-           SET status = 'failed', repository_workspace_status = 'failed',
-               preview_expires_at = ?, preview_cleanup_status = ?,
-               preview_cleaned_at = ?, preview_url = NULL, updated_at = ?
-           WHERE id = ?`,
-          failedAt,
-          cleanupComplete ? "complete" : "failed",
-          cleanupComplete ? failedAt : null,
-          failedAt,
-          draft.id,
-        );
-        const failed = this.requireDraft();
-        await this.ensureCleanupAlarm(failed);
-        return {
-          draft: failed,
-          changeSummary: "No repository revision was saved and the workspace was retired.",
-          operationNames: landingEditOperationNames(input.edits),
-          validation: {
-            status: "failed",
-            checks: ["npm run check", "npm run build"],
-            summary:
-              "The previous repository tree could not be restored safely; start a new update.",
-          },
-        };
-      }
-      this.ctx.storage.sql.exec(
-        "UPDATE draft SET status = 'preview_ready', updated_at = ? WHERE id = ?",
-        Date.now(),
-        draft.id,
-      );
-      return {
-        draft: this.requireDraft(),
-        changeSummary: "The requested edit was not saved; the previous revision remains active.",
-        operationNames: landingEditOperationNames(input.edits),
-        validation: {
-          status: "failed",
-          checks: ["npm run check", "npm run build"],
-          summary:
-            error instanceof RepositoryValidationError || error instanceof RepositoryEditError
-              ? error.message
-              : "The repository preview could not be updated; the previous revision was restored.",
-        },
-      };
-    }
+    const now = Date.now();
+    this.ctx.storage.sql.exec(
+      `UPDATE draft
+       SET repository_change_operation = ?, repository_change_summary = ?,
+           repository_operation_status = 'queued', repository_operation_error = NULL,
+           repository_operation_phase = NULL,
+           repository_operation_deadline_at = ?, repository_operation_attempt = 0,
+           updated_at = ?
+       WHERE id = ?`,
+      JSON.stringify(input.edits),
+      "Repository edit and validation are queued.",
+      now + REPOSITORY_OPERATION_TIMEOUT_MS,
+      now,
+      draft.id,
+    );
+    this.logEvent("repository_operation_queued", {
+      revision: input.expectedRevision,
+    });
+    await this.ctx.storage.setAlarm(now);
+    return this.requireDraft();
   }
 
   async update(input: UpdateDraftInput): Promise<DraftRecord> {
@@ -577,7 +444,17 @@ export class DraftCoordinator extends DurableObject<Env> {
       const now = Date.now();
       this.ctx.storage.sql.exec(
         `UPDATE draft
-         SET preview_revoked_at = ?, preview_cleanup_status = 'scheduled', updated_at = ?
+         SET preview_revoked_at = ?, preview_cleanup_status = 'scheduled',
+             repository_operation_status = CASE
+               WHEN repository_operation_status IN ('queued', 'running') THEN 'cancelled'
+               ELSE repository_operation_status
+             END,
+             repository_operation_error = CASE
+               WHEN repository_operation_status IN ('queued', 'running')
+                 THEN 'Repository operation cancelled by preview revocation.'
+               ELSE repository_operation_error
+             END,
+             updated_at = ?
          WHERE id = ?`,
         now,
         now,
@@ -587,7 +464,7 @@ export class DraftCoordinator extends DurableObject<Env> {
     }
 
     const revoked = this.requireDraft();
-    await this.ensureCleanupAlarm(revoked);
+    await this.ensureNextAlarm(revoked);
     return revoked;
   }
 
@@ -651,10 +528,279 @@ export class DraftCoordinator extends DurableObject<Env> {
     if (draft === null) {
       return;
     }
-    if (previewLifecycleState(draft) === "expired") {
+    const lifecycle = previewLifecycleState(draft);
+    if (lifecycle === "expired") {
       this.logEvent("preview_expired", { revision: draft.currentRevision });
     }
-    await this.cleanupPreview(draft.organizationId);
+    if (lifecycle !== "active") {
+      this.cancelRepositoryOperationForLifecycle(draft, lifecycle);
+      await this.cleanupPreview(draft.organizationId);
+      return;
+    }
+    if (
+      draft.repositoryOperationStatus === "queued" ||
+      draft.repositoryOperationStatus === "running"
+    ) {
+      await this.runRepositoryOperation(draft);
+    }
+    await this.ensureNextAlarm(this.requireDraft());
+  }
+
+  private async runRepositoryOperation(started: DraftRecord): Promise<void> {
+    let operations: readonly LandingEditOperation[];
+    try {
+      operations = parseStoredLandingEdits(started.repositoryChangeOperation);
+    } catch {
+      await this.failRepositoryOperation(
+        started,
+        "Stored repository operation is invalid; the workspace was retired.",
+      );
+      return;
+    }
+    const previousTreeSha = started.repositoryTreeSha;
+    const isInitial = previousTreeSha === null;
+    const resumeStrategy = repositoryResumeStrategy(
+      started.repositoryOperationStatus ?? "queued",
+      previousTreeSha,
+    );
+    const deadline = started.repositoryOperationDeadlineAt;
+    if (deadline === null || Date.now() >= deadline) {
+      await this.failRepositoryOperation(
+        started,
+        "Repository operation timed out before completion.",
+      );
+      return;
+    }
+    if (
+      started.repositoryWorkspaceId === null ||
+      started.repositoryPagePath === null ||
+      started.repositoryBaseSha === null
+    ) {
+      await this.failRepositoryOperation(started, "Repository operation state is incomplete.");
+      return;
+    }
+
+    this.ctx.storage.sql.exec(
+      `UPDATE draft
+       SET repository_operation_status = 'running',
+           repository_operation_attempt = repository_operation_attempt + 1,
+           repository_operation_error = NULL, updated_at = ?
+       WHERE id = ?`,
+      Date.now(),
+      started.id,
+    );
+    this.logEvent("repository_operation_started", {
+      attempt: started.repositoryOperationAttempt + 1,
+    });
+
+    let sandbox = getSandbox(this.env.Sandbox, started.repositoryWorkspaceId, {
+      labels: { draftId: started.id, organizationId: started.organizationId },
+      normalizeId: true,
+    });
+    try {
+      if (resumeStrategy === "reset_initial") {
+        await sandbox.destroy();
+        sandbox = getSandbox(this.env.Sandbox, started.repositoryWorkspaceId, {
+          labels: { draftId: started.id, organizationId: started.organizationId },
+          normalizeId: true,
+        });
+        this.logEvent("repository_operation_restart_reset");
+      }
+
+      const config = repositoryWorkspaceConfig(this.env);
+      this.setRepositoryOperationPhase("checkout");
+      await prepareRepositoryCheckout(sandbox, config, this.env.REPOSITORY_CHECKOUT_TOKEN);
+      this.assertRepositoryOperationActive(deadline);
+      if (isInitial) {
+        await installAndValidateRepository(sandbox, (step) => {
+          this.setRepositoryOperationPhase(step);
+        });
+        const preparedAt = Date.now();
+        this.ctx.storage.sql.exec(
+          `UPDATE draft
+           SET repository_workspace_status = 'ready', repository_prepared_at = ?,
+               status = 'building', repository_change_summary = ?, updated_at = ?
+           WHERE id = ?`,
+          preparedAt,
+          "Repository workspace is ready; the bounded edit is being validated.",
+          preparedAt,
+          started.id,
+        );
+        this.logEvent("repository_workspace_ready", {
+          revision: config.baseSha,
+          workspaceId: started.repositoryWorkspaceId,
+        });
+      } else {
+        await restoreRepositoryTree(
+          sandbox,
+          started.repositoryPagePath,
+          previousTreeSha,
+        );
+      }
+      this.assertRepositoryOperationActive(deadline);
+
+      const treeSha = await applyRepositoryEdits(
+        sandbox,
+        started.repositoryPagePath,
+        operations,
+      );
+      this.assertRepositoryOperationActive(deadline);
+      await validateRepositoryChanges(sandbox, (step) => {
+        this.setRepositoryOperationPhase(step);
+      });
+      this.assertRepositoryOperationActive(deadline);
+      const revision = await repositoryTreeRevision(started.repositoryBaseSha, treeSha);
+      const changeSummary = summarizeLandingEdits(started.hostname, operations);
+      this.setRepositoryOperationPhase("preview");
+      await this.renderRepositoryPreview(
+        started.organizationId,
+        this.env.PREVIEW_HOSTNAME,
+        revision,
+        treeSha,
+        changeSummary,
+        operations,
+      );
+      const finishedAt = Date.now();
+      this.ctx.storage.sql.exec(
+        `UPDATE draft
+         SET repository_operation_status = 'succeeded',
+             repository_operation_error = NULL,
+             repository_operation_deadline_at = NULL, updated_at = ?
+         WHERE id = ?`,
+        finishedAt,
+        started.id,
+      );
+      this.logEvent("repository_operation_succeeded", { revision });
+    } catch (error: unknown) {
+      const latest = this.requireDraft();
+      if (latest.repositoryOperationStatus === "cancelled") {
+        await this.destroyRepositoryWorkspace(latest);
+        return;
+      }
+      const message = repositoryOperationFailureMessage(error);
+      if (previousTreeSha !== null) {
+        try {
+          await restoreRepositoryTree(
+            sandbox,
+            started.repositoryPagePath,
+            previousTreeSha,
+          );
+          const failedAt = Date.now();
+          this.ctx.storage.sql.exec(
+            `UPDATE draft
+             SET status = 'preview_ready', repository_operation_status = 'validation_failed',
+                 repository_operation_error = ?, repository_operation_deadline_at = NULL,
+                 repository_change_summary = ?, updated_at = ?
+             WHERE id = ?`,
+            message,
+            "The requested edit was not saved; the previous revision remains active.",
+            failedAt,
+            started.id,
+          );
+          this.logEvent("repository_operation_validation_failed", { error: message });
+          return;
+        } catch {
+          await this.failRepositoryOperation(
+            latest,
+            "The previous repository tree could not be restored safely; the workspace was retired.",
+          );
+          return;
+        }
+      }
+      await this.failRepositoryOperation(latest, message);
+    }
+  }
+
+  private assertRepositoryOperationActive(deadline: number): void {
+    const draft = this.requireDraft();
+    if (draft.repositoryOperationStatus === "cancelled") {
+      throw new Error("Repository operation cancelled by preview revocation.");
+    }
+    if (previewLifecycleState(draft) !== "active") {
+      throw new Error("Repository operation cancelled because its draft lifecycle ended.");
+    }
+    if (Date.now() >= deadline) {
+      throw new Error("Repository operation timed out before completion.");
+    }
+  }
+
+  private cancelRepositoryOperationForLifecycle(
+    draft: DraftRecord,
+    lifecycle: PreviewLifecycleState,
+  ): void {
+    if (
+      draft.repositoryOperationStatus !== "queued" &&
+      draft.repositoryOperationStatus !== "running"
+    ) {
+      return;
+    }
+    this.ctx.storage.sql.exec(
+      `UPDATE draft
+       SET repository_operation_status = 'cancelled', repository_operation_error = ?,
+           repository_operation_deadline_at = NULL, updated_at = ?
+       WHERE id = ?`,
+      `Repository operation cancelled because the draft is ${lifecycle}.`,
+      Date.now(),
+      draft.id,
+    );
+    this.logEvent("repository_operation_cancelled", { lifecycle });
+  }
+
+  private async failRepositoryOperation(
+    draft: DraftRecord,
+    message: string,
+  ): Promise<void> {
+    const cleanupComplete = await this.destroyRepositoryWorkspace(draft);
+    const failedAt = Date.now();
+    this.ctx.storage.sql.exec(
+      `UPDATE draft
+       SET status = 'failed', repository_workspace_status = 'failed',
+           repository_operation_status = 'failed', repository_operation_error = ?,
+           repository_operation_deadline_at = NULL, repository_change_summary = ?,
+           preview_expires_at = ?, preview_cleanup_status = ?,
+           preview_cleaned_at = ?, preview_url = NULL, updated_at = ?
+       WHERE id = ?`,
+      message,
+      "No repository revision was saved and the disposable workspace was retired.",
+      failedAt,
+      cleanupComplete ? "complete" : "failed",
+      cleanupComplete ? failedAt : null,
+      failedAt,
+      draft.id,
+    );
+    this.logEvent("repository_operation_failed", {
+      cleanupComplete: cleanupComplete ? 1 : 0,
+      error: message,
+    });
+    this.logEvent("repository_workspace_failed", {
+      cleanupComplete: cleanupComplete ? 1 : 0,
+      workspaceId: draft.repositoryWorkspaceId,
+    });
+  }
+
+  private async destroyRepositoryWorkspace(draft: DraftRecord): Promise<boolean> {
+    if (draft.repositoryWorkspaceId === null) return true;
+    try {
+      await getSandbox(this.env.Sandbox, draft.repositoryWorkspaceId, {
+        normalizeId: true,
+      }).destroy();
+      this.logEvent("sandbox_destroyed", { workspaceId: draft.repositoryWorkspaceId });
+      return true;
+    } catch {
+      this.logEvent("sandbox_destroy_failed", { workspaceId: draft.repositoryWorkspaceId });
+      return false;
+    }
+  }
+
+  private setRepositoryOperationPhase(phase: RepositoryOperationPhase): void {
+    const draft = this.requireDraft();
+    this.ctx.storage.sql.exec(
+      "UPDATE draft SET repository_operation_phase = ?, updated_at = ? WHERE id = ?",
+      phase,
+      Date.now(),
+      draft.id,
+    );
+    this.logEvent("repository_operation_phase", { phase });
   }
 
   private readDraft(): DraftRecord | null {
@@ -706,6 +852,17 @@ export class DraftCoordinator extends DurableObject<Env> {
     if (currentAlarm === null || currentAlarm > scheduledAt) {
       await this.ctx.storage.setAlarm(scheduledAt);
     }
+  }
+
+  private async ensureNextAlarm(draft: DraftRecord): Promise<void> {
+    if (
+      draft.repositoryOperationStatus === "queued" ||
+      draft.repositoryOperationStatus === "running"
+    ) {
+      await this.ctx.storage.setAlarm(Date.now());
+      return;
+    }
+    await this.ensureCleanupAlarm(draft);
   }
 
   private logEvent(
@@ -927,6 +1084,18 @@ function toDraftRecord(row: DraftRow): DraftRecord {
     repositoryTreeSha: row.repository_tree_sha,
     repositoryChangeOperation: row.repository_change_operation,
     repositoryChangeSummary: row.repository_change_summary,
+    repositoryOperationStatus:
+      row.repository_operation_status === null
+        ? null
+        : requireRepositoryOperationStatus(row.repository_operation_status),
+    repositoryOperationPhase:
+      row.repository_operation_phase === null
+        ? null
+        : requireRepositoryOperationPhase(row.repository_operation_phase),
+    repositoryOperationError: row.repository_operation_error,
+    repositoryOperationDeadlineAt: row.repository_operation_deadline_at,
+    repositoryOperationAttempt: row.repository_operation_attempt,
+    repositoryIdempotencyKey: row.repository_idempotency_key,
     previewExpiresAt: row.preview_expires_at,
     previewRevokedAt: row.preview_revoked_at,
     previewCleanupStatus: row.preview_cleanup_status,
@@ -941,4 +1110,60 @@ function requireRepositoryWorkspaceStatus(value: string) {
     throw new Error(`Stored draft has an invalid repository workspace status: ${value}`);
   }
   return value;
+}
+
+function requireRepositoryOperationStatus(value: string): RepositoryOperationStatus {
+  if (!isRepositoryOperationStatus(value)) {
+    throw new Error(`Stored draft has an invalid repository operation status: ${value}`);
+  }
+  return value;
+}
+
+function requireRepositoryOperationPhase(value: string): RepositoryOperationPhase {
+  if (!isRepositoryOperationPhase(value)) {
+    throw new Error(`Stored draft has an invalid repository operation phase: ${value}`);
+  }
+  return value;
+}
+
+function parseStoredLandingEdits(serialized: string | null): readonly LandingEditOperation[] {
+  if (serialized === null) {
+    throw new Error("Stored repository operation is missing its edit batch");
+  }
+  const parsed: unknown = JSON.parse(serialized);
+  if (
+    !Array.isArray(parsed) ||
+    parsed.length === 0 ||
+    parsed.length > 8 ||
+    !parsed.every((entry: unknown) => isStoredLandingEdit(entry))
+  ) {
+    throw new Error("Stored repository operation has an invalid edit batch");
+  }
+  return parsed as LandingEditOperation[];
+}
+
+function isStoredLandingEdit(entry: unknown): boolean {
+  if (typeof entry !== "object" || entry === null) return false;
+  const operation = (entry as Record<string, unknown>)["operation"];
+  return (
+    typeof operation === "string" &&
+    [
+      "replace_headline",
+      "update_copy",
+      "update_cta",
+      "update_seo_metadata",
+      "replace_image",
+      "apply_page_change",
+    ].includes(operation)
+  );
+}
+
+function repositoryOperationFailureMessage(error: unknown): string {
+  if (error instanceof RepositoryValidationError || error instanceof RepositoryEditError) {
+    return error.message;
+  }
+  if (error instanceof Error && /cancelled|timed out/iu.test(error.message)) {
+    return error.message;
+  }
+  return "Repository workspace preparation or preview failed; the disposable workspace was destroyed.";
 }

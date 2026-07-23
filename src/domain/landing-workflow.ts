@@ -1,4 +1,5 @@
 import type { LandingPageIdentity } from "../repository/page-catalog";
+import type { RepositoryOperationPhase } from "./repository-execution";
 
 export const LANDING_WORKFLOW_STATES = [
   "awaiting_details",
@@ -31,6 +32,7 @@ export interface ManageLandingRequest {
   request: string;
   draft_id?: string;
   expected_revision?: string;
+  idempotency_key?: string;
 }
 
 export interface ManageLandingValidation {
@@ -51,6 +53,7 @@ export interface ManageLandingResult {
   revision: string | null;
   change_summary: string;
   change_operations: readonly string[];
+  execution_phase: RepositoryOperationPhase | null;
   validation: ManageLandingValidation;
   preview_url: string | null;
   next_action: string;

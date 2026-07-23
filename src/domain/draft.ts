@@ -1,4 +1,8 @@
 import type { PreviewCleanupStatus } from "./preview-lifecycle";
+import type {
+  RepositoryOperationPhase,
+  RepositoryOperationStatus,
+} from "./repository-execution";
 
 export const REPOSITORY_WORKSPACE_STATUSES = [
   "preparing",
@@ -42,6 +46,12 @@ export interface DraftRecord {
   repositoryTreeSha: string | null;
   repositoryChangeOperation: string | null;
   repositoryChangeSummary: string | null;
+  repositoryOperationStatus: RepositoryOperationStatus | null;
+  repositoryOperationPhase: RepositoryOperationPhase | null;
+  repositoryOperationError: string | null;
+  repositoryOperationDeadlineAt: number | null;
+  repositoryOperationAttempt: number;
+  repositoryIdempotencyKey: string | null;
   previewExpiresAt: number;
   previewRevokedAt: number | null;
   previewCleanupStatus: PreviewCleanupStatus;

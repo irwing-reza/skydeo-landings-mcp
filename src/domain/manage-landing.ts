@@ -40,6 +40,7 @@ export function planInitialLandingRequest(
           revision: null,
           change_summary: `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
           change_operations: [],
+          execution_phase: null,
           validation: NOT_RUN_VALIDATION,
           preview_url: null,
           next_action:
@@ -55,6 +56,7 @@ export function planInitialLandingRequest(
         revision: null,
         change_summary: `Resolved ${update.page_summary ?? update.resolution.page.name}; no changes applied.`,
         change_operations: [],
+        execution_phase: null,
         validation: NOT_RUN_VALIDATION,
         preview_url: null,
         next_action: update.question ?? "Describe the desired page changes.",
@@ -69,6 +71,7 @@ export function planInitialLandingRequest(
       revision: null,
       change_summary: "No page was selected and no changes were applied.",
       change_operations: [],
+      execution_phase: null,
       validation: NOT_RUN_VALIDATION,
       preview_url: null,
       next_action:
@@ -93,18 +96,23 @@ export function planInitialLandingRequest(
     revision: null,
     change_summary: "No draft was selected and no changes were applied.",
     change_operations: [],
+    execution_phase: null,
     validation: NOT_RUN_VALIDATION,
     preview_url: null,
     next_action: "Provide the draft_id for the workflow you want to inspect or continue.",
   };
 }
 
-export function inspectLandingDraft(draft: DraftRecord): ManageLandingResult {
+export function inspectLandingDraft(
+  draft: DraftRecord,
+  intent: ManageLandingResult["intent"] = "inspect_status",
+): ManageLandingResult {
   const state = workflowStateForDraft(draft);
-  const repositoryBacked = draft.repositoryTreeSha !== null;
+  const repositoryBacked = draft.repositoryPagePath !== null;
+  const validation = repositoryValidationForDraft(draft);
   return {
     state,
-    intent: "inspect_status",
+    intent,
     page: pageForDraft(draft),
     draft_id: draft.id,
     revision: publicRevision(draft),
@@ -112,13 +120,8 @@ export function inspectLandingDraft(draft: DraftRecord): ManageLandingResult {
       ? draft.repositoryChangeSummary ?? "The repository-backed draft is ready."
       : "This is a legacy HTML-backed draft; repository-backed change records are not available.",
     change_operations: storedChangeOperations(draft),
-    validation: repositoryBacked
-      ? {
-          status: "passed",
-          checks: ["npm run check", "npm run build", "rendered Astro route"],
-          summary: "The persisted repository revision passed canonical validation and rendered route inspection.",
-        }
-      : NOT_RUN_VALIDATION,
+    execution_phase: draft.repositoryOperationPhase,
+    validation: repositoryBacked ? validation : NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
     next_action:
       repositoryBacked && state === "preview_ready"
@@ -145,6 +148,7 @@ export function repositoryMutationResult(
     revision: publicRevision(mutation.draft),
     change_summary: mutation.changeSummary,
     change_operations: mutation.operationNames,
+    execution_phase: mutation.draft.repositoryOperationPhase,
     validation: mutation.validation,
     preview_url: activePreviewUrl(mutation.draft),
     next_action: passed
@@ -169,6 +173,7 @@ export function unavailableDraftOperation(
     revision: draft.currentRevision,
     change_summary: `No changes were applied; ${operation} is not configured.`,
     change_operations: [],
+    execution_phase: draft.repositoryOperationPhase,
     validation: NOT_RUN_VALIDATION,
     preview_url: activePreviewUrl(draft),
     next_action:
@@ -191,6 +196,7 @@ function unavailableRepositoryResult(
     revision: null,
     change_summary: changeSummary,
     change_operations: [],
+    execution_phase: null,
     validation: NOT_RUN_VALIDATION,
     preview_url: null,
     next_action:
@@ -204,6 +210,24 @@ function workflowStateForDraft(draft: DraftRecord): LandingWorkflowState {
     previewLifecycleState(draft) !== "active"
   ) {
     return "failed";
+  }
+
+  if (draft.repositoryOperationStatus === "validation_failed") {
+    return "validation_failed";
+  }
+  if (
+    draft.repositoryOperationStatus === "failed" ||
+    draft.repositoryOperationStatus === "cancelled"
+  ) {
+    return "failed";
+  }
+  if (
+    draft.repositoryOperationStatus === "queued" ||
+    draft.repositoryOperationStatus === "running"
+  ) {
+    return draft.repositoryWorkspaceStatus === "preparing"
+      ? "preparing_workspace"
+      : "editing";
   }
 
   switch (draft.status) {
@@ -238,9 +262,45 @@ function nextActionForDraftState(state: LandingWorkflowState): string {
       return "Wait for publishing to complete, then inspect status again.";
     case "failed":
       return "Inspect the failure and start a new request after correcting it.";
+    case "preparing_workspace":
+    case "editing":
+      return "Poll this draft_id for durable repository progress. Do not start duplicate work.";
+    case "validation_failed":
+      return "Correct or narrow the requested edit, then retry against the unchanged revision.";
     default:
       return "Repository-backed revisions are unavailable until the repository boundary is configured.";
   }
+}
+
+function repositoryValidationForDraft(
+  draft: DraftRecord,
+): ManageLandingResult["validation"] {
+  if (
+    draft.repositoryOperationStatus === "queued" ||
+    draft.repositoryOperationStatus === "running"
+  ) {
+    return {
+      status: "pending",
+      checks: ["npm run check", "npm run build", "rendered Astro route"],
+      summary: null,
+    };
+  }
+  if (
+    draft.repositoryOperationStatus === "validation_failed" ||
+    draft.repositoryOperationStatus === "failed" ||
+    draft.repositoryOperationStatus === "cancelled"
+  ) {
+    return {
+      status: "failed",
+      checks: ["npm run check", "npm run build", "rendered Astro route"],
+      summary: draft.repositoryOperationError,
+    };
+  }
+  return {
+    status: "passed",
+    checks: ["npm run check", "npm run build", "rendered Astro route"],
+    summary: "The persisted repository revision passed canonical validation and rendered route inspection.",
+  };
 }
 
 function pageForDraft(draft: DraftRecord): ManageLandingResult["page"] {

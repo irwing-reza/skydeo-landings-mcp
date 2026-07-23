@@ -19,6 +19,10 @@ import {
 } from "../src/domain/landing-workflow";
 import { LOCAL_CANDIDATE_LANDING_SNAPSHOT } from "../src/repository/page-catalog";
 import type { DraftRecord } from "../src/domain/draft";
+import {
+  repositoryDraftId,
+  repositoryResumeStrategy,
+} from "../src/domain/repository-execution";
 
 describe("manage_landing contract", () => {
   it.each([
@@ -69,6 +73,7 @@ describe("manage_landing contract", () => {
       revision: null,
       change_summary: "No changes yet",
       change_operations: [],
+      execution_phase: null,
       validation: { status: "not_run", checks: [], summary: null },
       preview_url: null,
       next_action: "Identify the page and requested changes.",
@@ -164,6 +169,61 @@ describe("manage_landing contract", () => {
     });
   });
 
+  it("reports durable preparation and validation failure states", () => {
+    const preparing = draftRecord();
+    preparing.status = "draft";
+    preparing.currentRevision = "0".repeat(40);
+    preparing.previewUrl = null;
+    preparing.repositoryPagePath = "src/domains/tacograph/pages/index.astro";
+    preparing.repositoryWorkspaceStatus = "preparing";
+    preparing.repositoryOperationStatus = "queued";
+    preparing.repositoryOperationPhase = "checkout";
+    preparing.repositoryChangeOperation = JSON.stringify([
+      { operation: "replace_headline", value: "Cook smarter" },
+    ]);
+
+    expect(inspectLandingDraft(preparing)).toMatchObject({
+      state: "preparing_workspace",
+      draft_id: preparing.id,
+      revision: null,
+      validation: { status: "pending" },
+      execution_phase: "checkout",
+      preview_url: null,
+    });
+
+    preparing.status = "preview_ready";
+    preparing.currentRevision = "a".repeat(64);
+    preparing.repositoryWorkspaceStatus = "ready";
+    preparing.repositoryOperationStatus = "validation_failed";
+    preparing.repositoryOperationPhase = "check";
+    preparing.repositoryOperationError = "Repository check validation failed (exit code 1)";
+    expect(inspectLandingDraft(preparing)).toMatchObject({
+      state: "validation_failed",
+      revision: "a".repeat(64),
+      validation: {
+        status: "failed",
+        summary: "Repository check validation failed (exit code 1)",
+      },
+      execution_phase: "check",
+    });
+  });
+
+  it("derives stable actor-scoped draft IDs for uncertain retries", async () => {
+    const first = await repositoryDraftId("skydeo", "actor-1", "request-123456");
+    const retry = await repositoryDraftId("skydeo", "actor-1", "request-123456");
+    const otherActor = await repositoryDraftId("skydeo", "actor-2", "request-123456");
+
+    expect(first).toBe(retry);
+    expect(first).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-5[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u);
+    expect(otherActor).not.toBe(first);
+  });
+
+  it("selects restart-safe recovery for initial and revision operations", () => {
+    expect(repositoryResumeStrategy("queued", null)).toBe("continue_initial");
+    expect(repositoryResumeStrategy("running", null)).toBe("reset_initial");
+    expect(repositoryResumeStrategy("running", "b".repeat(40))).toBe("restore_revision");
+  });
+
   it("does not return a revoked preview URL from unified status", () => {
     const draft = draftRecord();
     draft.previewRevokedAt = Date.now();
@@ -218,6 +278,12 @@ function draftRecord(): DraftRecord {
     repositoryTreeSha: null,
     repositoryChangeOperation: null,
     repositoryChangeSummary: null,
+    repositoryOperationStatus: null,
+    repositoryOperationPhase: null,
+    repositoryOperationError: null,
+    repositoryOperationDeadlineAt: null,
+    repositoryOperationAttempt: 0,
+    repositoryIdempotencyKey: null,
     previewExpiresAt: Date.now() + 60_000,
     previewRevokedAt: null,
     previewCleanupStatus: "scheduled",

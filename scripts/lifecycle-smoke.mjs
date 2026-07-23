@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 const DEFAULT_MCP_URL = "http://localhost:8787/mcp";
 const POLL_INTERVAL_MS = 1_000;
 const CLEANUP_TIMEOUT_MS = 90_000;
+const REPOSITORY_TIMEOUT_MS = 20 * 60 * 1000;
 
 const options = parseArguments(process.argv.slice(2));
 const mcpUrl = new URL(options.mcpUrl);
@@ -131,12 +132,27 @@ async function verifyExpirationLifecycle() {
 
 async function verifyRepositoryDraftLifecycle() {
   const marker = `Repository smoke ${crypto.randomUUID()}`;
+  const idempotencyKey = `repository-smoke-${crypto.randomUUID()}`;
   let workflow;
   let cleanupComplete = false;
   try {
+    const startedAt = Date.now();
     workflow = await callWorkflowTool({
       request: `Update TacoGraph: headline to "${marker}"`,
+      idempotency_key: idempotencyKey,
     });
+    assert(Date.now() - startedAt < 30_000, "repository mutation should return its draft ID promptly");
+    assert(typeof workflow.draft_id === "string", "repository mutation should return a draft ID");
+    assert(
+      ["preparing_workspace", "editing", "preview_ready"].includes(workflow.state),
+      `repository mutation returned unexpected initial state ${String(workflow.state)}`,
+    );
+    const recovered = await callWorkflowTool({
+      request: `Update TacoGraph: headline to "${marker}"`,
+      idempotency_key: idempotencyKey,
+    });
+    assert(recovered.draft_id === workflow.draft_id, "idempotent retry allocated another draft");
+    workflow = await waitForRepositoryOperation(workflow.draft_id);
     assert(workflow.state === "preview_ready", repositoryFailure(workflow));
     assert(workflow.validation?.status === "passed", "repository draft validation should pass");
     assert(
@@ -184,6 +200,30 @@ async function verifyRepositoryDraftLifecycle() {
       }
     }
   }
+}
+
+async function waitForRepositoryOperation(draftId) {
+  const deadline = Date.now() + REPOSITORY_TIMEOUT_MS;
+  let latest;
+  let lastPhase;
+  while (Date.now() < deadline) {
+    latest = await callWorkflowTool({ request: "What is the status?", draft_id: draftId });
+    if (latest.execution_phase !== lastPhase) {
+      lastPhase = latest.execution_phase;
+      report("repository_operation_phase", {
+        draftId,
+        phase: lastPhase ?? "queued",
+        state: latest.state,
+      });
+    }
+    if (["preview_ready", "validation_failed", "failed"].includes(latest.state)) {
+      return latest;
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw new Error(
+    `Timed out waiting for repository operation ${draftId}; last state was ${JSON.stringify(latest)}`,
+  );
 }
 
 async function createDraft(marker) {
