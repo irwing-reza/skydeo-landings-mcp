@@ -21,6 +21,12 @@ the race and finish cleanup before the request reads state. The structured
 `preview_expired` event is the authoritative evidence that the alarm observed the
 expired state.
 
+An explicit `repository` scenario creates a bounded TacoGraph headline edit
+through `manage_landing`, requires canonical validation and rendered-route
+inspection, fetches the protected Astro preview, verifies persisted status,
+revokes it, and waits for repository Sandbox destruction. It never requests or
+confirms publishing.
+
 ## Local container and alarm smoke test
 
 Docker Desktop, OrbStack, or another Docker-compatible engine must be running.
@@ -79,6 +85,14 @@ export LIFECYCLE_SMOKE_BEARER_TOKEN='<short-lived MCP OAuth token>'
 export PREVIEW_ACCESS_CLIENT_ID='<Access service-token client ID>'
 export PREVIEW_ACCESS_CLIENT_SECRET='<Access service-token client secret>'
 npm run smoke:lifecycle -- --mcp-url https://landing-mcp.skydeo.com/mcp
+```
+
+Run only the repository-backed disposable scenario with:
+
+```sh
+npm run smoke:lifecycle -- \
+  --mcp-url https://landing-mcp.skydeo.com/mcp \
+  --scenario repository
 ```
 
 Before running, start a filtered Workers log tail or use Workers Observability.

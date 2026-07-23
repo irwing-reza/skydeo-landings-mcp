@@ -41,6 +41,9 @@ try {
   if (options.scenario === "all" || options.scenario === "expired") {
     await verifyExpirationLifecycle();
   }
+  if (options.scenario === "repository") {
+    await verifyRepositoryDraftLifecycle();
+  }
 
   report("smoke_passed", { scenario: options.scenario });
 } finally {
@@ -126,6 +129,63 @@ async function verifyExpirationLifecycle() {
   report("expired_container_cleaned", { draftId: draft.draft_id });
 }
 
+async function verifyRepositoryDraftLifecycle() {
+  const marker = `Repository smoke ${crypto.randomUUID()}`;
+  let workflow;
+  let cleanupComplete = false;
+  try {
+    workflow = await callWorkflowTool({
+      request: `Update TacoGraph: headline to "${marker}"`,
+    });
+    assert(workflow.state === "preview_ready", repositoryFailure(workflow));
+    assert(workflow.validation?.status === "passed", "repository draft validation should pass");
+    assert(
+      workflow.validation?.checks?.includes("rendered Astro route"),
+      "repository draft should inspect the rendered Astro route",
+    );
+    assert(
+      workflow.change_operations?.includes("replace_headline"),
+      "repository draft should persist the headline operation",
+    );
+    assert(typeof workflow.revision === "string", "repository draft should return a revision");
+    await assertPreview(workflow.preview_url, marker, 200);
+    report("repository_preview_verified", {
+      draftId: workflow.draft_id,
+      revision: workflow.revision,
+    });
+
+    const inspected = await callWorkflowTool({
+      request: "What is the status?",
+      draft_id: workflow.draft_id,
+    });
+    assert(inspected.state === "preview_ready", "repository draft status should remain ready");
+    assert(inspected.revision === workflow.revision, "repository status should preserve the revision");
+
+    const revoked = await callDraftTool("revoke_preview", { draft_id: workflow.draft_id });
+    assert(
+      ["revoked", "cleaned_up"].includes(revoked.preview_state),
+      `repository preview returned unexpected revoke state ${String(revoked.preview_state)}`,
+    );
+    await assertPreview(workflow.preview_url, marker, 410);
+    await waitForCleanup(workflow.draft_id);
+    cleanupComplete = true;
+    report("repository_workspace_cleaned", { draftId: workflow.draft_id });
+  } finally {
+    if (!cleanupComplete && typeof workflow?.draft_id === "string") {
+      try {
+        await callDraftTool("revoke_preview", { draft_id: workflow.draft_id });
+        await waitForCleanup(workflow.draft_id);
+        report("repository_workspace_cleaned_after_failure", { draftId: workflow.draft_id });
+      } catch (error) {
+        report("repository_workspace_cleanup_failed", {
+          draftId: workflow.draft_id,
+          error: error instanceof Error ? error.message : "unknown cleanup failure",
+        });
+      }
+    }
+  }
+}
+
 async function createDraft(marker) {
   return callDraftTool("create_draft", {
     hostname: "lifecycle-smoke.skydeo.invalid",
@@ -158,6 +218,19 @@ async function callDraftTool(name, args) {
   assert(
     result.structuredContent && typeof result.structuredContent === "object",
     `${name} did not return structured draft content`,
+  );
+  return result.structuredContent;
+}
+
+async function callWorkflowTool(args) {
+  const result = await client.callTool({ name: "manage_landing", arguments: args });
+  if (result.isError) {
+    const message = result.content.find((item) => item.type === "text")?.text;
+    throw new Error(`manage_landing failed: ${message ?? "unknown tool error"}`);
+  }
+  assert(
+    result.structuredContent && typeof result.structuredContent === "object",
+    "manage_landing did not return structured workflow content",
   );
   return result.structuredContent;
 }
@@ -199,10 +272,17 @@ function parseArguments(args) {
       throw new Error(`Unknown argument: ${argument}`);
     }
   }
-  if (!["all", "revoked", "expired"].includes(scenario)) {
-    throw new Error("--scenario must be all, revoked, or expired");
+  if (!["all", "revoked", "expired", "repository"].includes(scenario)) {
+    throw new Error("--scenario must be all, revoked, expired, or repository");
   }
   return { mcpUrl, scenario };
+}
+
+function repositoryFailure(workflow) {
+  const summary = workflow.validation?.summary;
+  return `repository draft should reach preview_ready, got ${String(workflow.state)}${
+    typeof summary === "string" ? `: ${summary}` : ""
+  }`;
 }
 
 function requiredValue(args, index, flag) {
