@@ -31,10 +31,11 @@ The intended public MCP boundary is:
 | Protected previews | Complete | Access assertion and lifecycle checks before proxying |
 | Preview lifecycle | Complete | TTL, revoke, alarms, cleanup, structured events |
 | Local lifecycle verification | Complete | Real containers, alarms, expiry, revoke, repeated cleanup |
-| Production lifecycle verification | Conditionally authorized | Run one disposable test only after repository-backed cleanup and preflight checks are complete |
+| Production lifecycle verification | Preflight passed; execution blocked | The authorized repository preflight passed, but two composed-edit calls exceeded the MCP client's 120-second tool deadline before returning a draft ID |
 | Canonical repository integration | Boundary complete | Temporary fork, `master`, pinned SHA, read-only checkout token, PR-only publishing, and advancement policy confirmed |
-| Unified landing workflow | In progress | `manage_landing` composes bounded existing-page headline, hero copy, CTA, SEO, image, and section-order updates in repository-backed drafts; create and publish remain closed |
+| Unified landing workflow | In progress | `manage_landing` composes bounded existing-page edits, but its synchronous repository path exceeds the production MCP tool deadline; create and publish remain closed |
 | Repository-backed previews | In progress | Exact-SHA checkout, deterministic install, canonical validation, tree-derived revisions, reusable workspaces, rendered-route inspection, and cleanup are connected for bounded edit batches |
+| Asynchronous repository execution | Planned; immediate priority | Return a durable draft ID before checkout and validation, continue independently, expose polling and recovery, and make retries idempotent |
 | Structured editing | In progress | The initial operation set is implemented with static-target and single-page boundaries; broader layout/source transformations remain closed |
 | Publish approval and adapter | In progress | Separate `confirm_publish` boundary is registered but fails closed; no confirmation records or production capability exist |
 | Fleet orphan reconciliation | Planned | Current cleanup is per known draft only |
@@ -297,7 +298,7 @@ Acceptance criteria:
 
 ## Milestone 8: Complete the validate, preview, and revise loop
 
-**Status: Implemented for bounded existing-page edit batches**
+**Status: Internally implemented for bounded edit batches; production response timing blocks the public loop**
 
 After each edit batch:
 
@@ -311,6 +312,48 @@ After each edit batch:
 
 Subsequent requests reuse the same `draft_id` and require `expected_revision`.
 Revision conflicts fail rather than silently overwriting another edit.
+
+### Production timeout finding and asynchronous execution slice
+
+On July 22, 2026, the deployed `skydeo_landing_prod` MCP passed the required
+read-only preflight: repository-backed editing and workspace cleanup were enabled,
+all six bounded edit types were advertised, and publishing remained disabled. Two
+authorized composed TacoGraph edit attempts then exceeded the MCP client's
+120-second `tools/call` deadline while `manage_landing` synchronously awaited
+repository preparation, canonical validation, Astro build, and preview readiness.
+Neither call returned its already-generated draft ID, so the caller could not poll,
+inspect, or immediately revoke the disposable workflow. No publishing tool was
+called. The production end-to-end test is therefore **not passed**.
+
+The next implementation slice must make repository work durable and asynchronous:
+
+- [ ] Accept an idempotency key for each initial mutation request.
+- [ ] Create and persist the draft record, schedule cleanup, and return its
+      `draft_id` and `preparing_workspace` state before slow repository work starts.
+- [ ] Continue checkout, install, edits, validation, build, rendered-route
+      inspection, and preview startup independently of the initiating MCP request.
+- [ ] Let `manage_landing` and/or `get_draft` poll durable progress through
+      `preparing_workspace`, `editing`, `validation_failed`, `preview_ready`, and
+      `failed` without starting duplicate work.
+- [ ] Make repeated requests with the same actor, organization, and idempotency key
+      resolve to the same draft and operation result.
+- [ ] Add a bounded recovery lookup for a request whose transport disconnected
+      before its draft ID reached the caller.
+- [ ] Define cancellation and timeout behavior so every allocated workspace is
+      either retained behind an active draft lifecycle or destroyed and audited.
+- [ ] Verify retries, disconnects, Worker restarts, alarm cleanup, and failure
+      destruction with unit, container-backed, and production smoke tests.
+
+Asynchronous acceptance criteria:
+
+- Initial repository mutations return a durable draft ID comfortably inside the
+  MCP client deadline without claiming validation or preview readiness.
+- Client timeout or disconnect does not stop durable work or make its draft
+  unreachable.
+- Retrying an uncertain request cannot allocate a second repository workspace.
+- Terminal success and failure remain observable after the initiating session ends.
+- Revocation and expiry clean every known workspace, while publishing remains
+  unavailable.
 
 Acceptance criteria:
 
@@ -429,9 +472,13 @@ Acceptance criteria:
 
 ## Immediate next actions
 
-1. Exercise the conditionally authorized disposable production lifecycle test
-   only after its new read-only repository-workspace preflight passes.
-2. Verify the operation targets against real canonical pages and add explicit
+1. Implement the Milestone 8 asynchronous start, polling, idempotency, recovery,
+   and timeout-cleanup slice before creating another production repository draft.
+2. Repeat the authorized disposable production lifecycle test only after the
+   read-only preflight passes and the initiating call returns a durable draft ID
+   within the MCP deadline; then verify preview contents, persisted revision,
+   revocation, and workspace destruction.
+3. Verify the operation targets against real canonical pages and add explicit
    `data-landing-role` markers where existing markup is otherwise ambiguous.
-3. Keep `manage_landing` create, unbounded source-edit, and publish-request branches
+4. Keep `manage_landing` create, unbounded source-edit, and publish-request branches
    fail closed until their corresponding durable workflow operations exist.
